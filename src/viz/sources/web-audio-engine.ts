@@ -44,7 +44,17 @@ export class AudioEngine {
   private splitter: ChannelSplitterNode | null = null;
   /** [左, 右] 各一个 analyser —— 分声道电平靠它们 */
   private analysers: AnalyserNode[] = [];
-  private buffers: Uint8Array<ArrayBuffer>[] = [];
+  /** 时域缓冲（长度 = fftSize = 2048）：电平与波形共用，`getByteTimeDomainData` 会写满 */
+  private timeBuffers: Uint8Array<ArrayBuffer>[] = [];
+  /**
+   * 频域缓冲（长度 = frequencyBinCount = fftSize/2 = 1024）。
+   *
+   * ⚠️ 必须和时域缓冲分开。`getByteFrequencyData` **只填前 frequencyBinCount 个元素**，
+   * 后半段不动 —— 如果两者共用一个 buffer，后半段就是上一次读时域时留下的波形数据。
+   * 折叠时再按整个 buffer 当有效长度，就会把**波形数据当成频谱**画出来，
+   * 表现是频谱右端凭空多出一块（与"真实频谱"之间还夹着一段空白）。
+   */
+  private freqBuffers: Uint8Array<ArrayBuffer>[] = [];
   private gain: GainNode | null = null;
   private source: AudioBufferSourceNode | null = null;
   private buffer: AudioBuffer | null = null;
@@ -110,7 +120,9 @@ export class AudioEngine {
         splitter.connect(analyser, i, 0);
         analyser.connect(merger, 0, i);
         this.analysers.push(analyser);
-        this.buffers.push(new Uint8Array(analyser.fftSize));
+        this.timeBuffers.push(new Uint8Array(analyser.fftSize));
+        // 尺寸就按 frequencyBinCount 开，折叠函数自然会用对这个长度
+        this.freqBuffers.push(new Uint8Array(analyser.frequencyBinCount));
       }
 
       const gain = ctx.createGain();
@@ -195,7 +207,7 @@ export class AudioEngine {
 
   private readLevelAt(index: number): number {
     const analyser = this.analysers[index];
-    const data = this.buffers[index];
+    const data = this.timeBuffers[index];
     if (!analyser || !data) return LEVEL_NO_SIGNAL;
 
     analyser.getByteTimeDomainData(data);
@@ -219,7 +231,7 @@ export class AudioEngine {
    */
   readSpectrum(): number[] {
     const analyser = this.analysers[0];
-    const data = this.buffers[0];
+    const data = this.freqBuffers[0];
     if (!analyser || !data) return this.binCache;
     analyser.getByteFrequencyData(data);
     foldToBins(data, this.binCache);
@@ -229,7 +241,7 @@ export class AudioEngine {
   /** 波形：2048 个时域点 → 256 个显示点（同上，取左声道） */
   readWaveform(): number[] {
     const analyser = this.analysers[0];
-    const data = this.buffers[0];
+    const data = this.timeBuffers[0];
     if (!analyser || !data) return this.pointCache;
     analyser.getByteTimeDomainData(data);
     decimate(data, this.pointCache);
@@ -242,7 +254,8 @@ export class AudioEngine {
     this.ctx = null;
     this.splitter = null;
     this.analysers = [];
-    this.buffers = [];
+    this.timeBuffers = [];
+    this.freqBuffers = [];
     this.gain = null;
     this.buffer = null;
   }
@@ -258,6 +271,8 @@ export class AudioEngine {
  *      而"有没有峰"恰恰是看频谱的主要目的。
  */
 function foldToBins(src: Uint8Array, out: number[]): void {
+  // src 必须是**频域缓冲**（长度 = frequencyBinCount = fftSize/2）。
+  // 若误传整个 fftSize 长度的时域缓冲，后半段是波形数据 —— 折叠出来就是"假频谱"。
   const n = src.length;
   const bins = out.length;
   for (let i = 0; i < bins; i += 1) {
