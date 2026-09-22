@@ -2,11 +2,22 @@
  * 本地音频分析引擎（Web Audio API）
  *
  * 这是"两条数据源"里的第二条 —— 音频**真的进了浏览器**的那条：
- *   文件 → decodeAudioData → AudioBuffer → AudioBufferSourceNode → AnalyserNode
+ *   文件 → decodeAudioData → AudioBuffer → AudioBufferSourceNode → 分析 → 输出
  *
  * 对比设备那条路（DSP 算好推给我们），差别就在这句话：
  *   音频流不经过浏览器时，前端只能"可视化"设备算好的结果；
  *   音频进了浏览器，前端才能真正"分析"它。这个类就是后者的入口。
+ *
+ * ── 音频图（分声道分析） ────────────────────────────────────────
+ *   source → splitter ─┬→ analyserL → merger[0] ┐
+ *                      └→ analyserR → merger[1] ┴→ gain → destination
+ *
+ *   为什么要 merger：Web Audio 是 **pull 模型** —— 只有连到 destination
+ *   的路径才会被处理。所以"只分析不接输出"的支路拿不到任何数据，
+ *   必须把分声道分析**串进主链路**（AnalyserNode 是透传的，不影响声音）。
+ *
+ *   单声道文件会在 splitter 处被 up-mix（L/R 收到相同信号）——
+ *   这是正确行为：单声道就该在两个扬声器都响。
  *
  * ── 三个必须知道的约束（都是真坑） ──────────────────────────────
  *   1. AudioContext 受 autoplay policy 约束：必须在**用户手势**里 resume()，
@@ -16,30 +27,26 @@
  *      **重采样到 context 的采样率**（所以 audioBuffer.sampleRate 是 context 的）；
  *   3. AudioBufferSourceNode 是**一次性**的：start() 之后不能重用、不能暂停续播。
  *      所以"暂停/继续"要记下 offset 再重建节点 —— 这是本类唯一有点绕的地方。
- *
- * ── 输出与协议同构 ──────────────────────────────────────────────
- *   readSpectrum() 返回 64 个 0~255（≈ getByteFrequencyData 折叠而来）
- *   readWaveform() 返回 256 个 0~255、128 为中轴
- *   —— 与设备推送的 Frame 完全同构，所以渲染器一行都不用改。
  */
 import { LEVEL_NO_SIGNAL, SPECTRUM_BINS, WAVEFORM_POINTS } from '../../protocol';
 
 /** FFT 窗口：2048 → frequencyBinCount = 1024 */
 const FFT_SIZE = 2048;
+/** 分析的声道数：本地文件按 L/R 两路计量（与调音台"每声道一路表"一致） */
+const CHANNEL_COUNT = 2;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
-  private analyser: AnalyserNode | null = null;
+  private splitter: ChannelSplitterNode | null = null;
+  /** [左, 右] 各一个 analyser —— 分声道电平靠它们 */
+  private analysers: AnalyserNode[] = [];
+  private buffers: Uint8Array<ArrayBuffer>[] = [];
   private gain: GainNode | null = null;
   private source: AudioBufferSourceNode | null = null;
   private buffer: AudioBuffer | null = null;
 
-  // ⚠️ 显式写 <ArrayBuffer>：TS 5.7 起 TypedArray 带上了缓冲区泛型参数，
-  // 而 Web Audio 的 getByteXxxData 只接受 Uint8Array<ArrayBuffer>（不收 SharedArrayBuffer）
-  private freq: Uint8Array<ArrayBuffer> | null = null;
-  private time: Uint8Array<ArrayBuffer> | null = null;
-
-  /** 复用数组：每帧原地重写，避免高频分配（调用方请当帧用完即弃） */
+  /** 复用输出：每帧原地重写，避免高频分配（调用方请当帧用完即弃） */
+  private readonly levelCache: number[] = new Array<number>(CHANNEL_COUNT).fill(LEVEL_NO_SIGNAL);
   private readonly binCache: number[] = new Array<number>(SPECTRUM_BINS).fill(0);
   private readonly pointCache: number[] = new Array<number>(WAVEFORM_POINTS).fill(128);
 
@@ -61,13 +68,18 @@ export class AudioEngine {
     return this.buffer?.duration ?? 0;
   }
 
+  /** 声道数（分析链的规模，与文件实际声道无关：单声道会被 up-mix 成 L/R） */
+  get channelCount(): number {
+    return CHANNEL_COUNT;
+  }
+
   /** 当前播放位置（秒） */
   get position(): number {
     if (!this.ctx || !this.playingFlag) return this.offset;
     return Math.min(this.ctx.currentTime - this.startedAt, this.duration);
   }
 
-  /** 监听开关：默认关闭（只分析不出声）—— 演示时不至于突然外放 */
+  /** 监听开关：默认外放；点一下变静默分析（只出图不出声） */
   setMonitor(on: boolean): void {
     this.monitorOn = on;
     if (this.gain && this.ctx) {
@@ -79,27 +91,32 @@ export class AudioEngine {
     return this.monitorOn;
   }
 
-  /** 惰性创建音频图。⚠️ 必须在用户手势里调用（或由手势触发的调用链调用） */
+  /** 惰性建图。⚠️ 必须在用户手势里调用（或由手势触发的调用链调用） */
   private ensure(): AudioContext {
     if (!this.ctx) {
       const ctx = new AudioContext();
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = FFT_SIZE;
-      analyser.smoothingTimeConstant = 0.7;
+      const splitter = ctx.createChannelSplitter(CHANNEL_COUNT);
+      const merger = ctx.createChannelMerger(CHANNEL_COUNT);
+
+      for (let i = 0; i < CHANNEL_COUNT; i += 1) {
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = FFT_SIZE;
+        analyser.smoothingTimeConstant = 0.7;
+        // splitter 的第 i 路输出 → 该声道的分析节点 → 接回 merger 的第 i 路（透传）
+        splitter.connect(analyser, i, 0);
+        analyser.connect(merger, 0, i);
+        this.analysers.push(analyser);
+        this.buffers.push(new Uint8Array(analyser.fftSize));
+      }
 
       const gain = ctx.createGain();
       gain.gain.value = this.monitorOn ? 1 : 0;
-
-      // source → analyser → gain → destination
-      // （analyser 是透传节点；gain 决定是否真的出声）
-      analyser.connect(gain);
+      merger.connect(gain);
       gain.connect(ctx.destination);
 
       this.ctx = ctx;
-      this.analyser = analyser;
+      this.splitter = splitter;
       this.gain = gain;
-      this.freq = new Uint8Array(analyser.frequencyBinCount);
-      this.time = new Uint8Array(analyser.fftSize);
     }
     return this.ctx;
   }
@@ -116,12 +133,12 @@ export class AudioEngine {
   }
 
   play(): void {
-    if (!this.buffer || !this.ctx || !this.analyser) return;
+    if (!this.buffer || !this.ctx || !this.splitter) return;
     this.stopSource();
 
     const src = this.ctx.createBufferSource();
     src.buffer = this.buffer;
-    src.connect(this.analyser);
+    src.connect(this.splitter);
     src.onended = () => {
       if (this.source === src) {
         // 自然播完：位置归零，等待用户再次播放
@@ -157,32 +174,24 @@ export class AudioEngine {
     this.source = null;
   }
 
-  /** 频谱：1024 个 FFT bin → 64 个显示 bin */
-  readSpectrum(): number[] {
-    const analyser = this.analyser;
-    const data = this.freq;
-    if (!analyser || !data) return this.binCache;
-    analyser.getByteFrequencyData(data);
-    foldToBins(data, this.binCache);
-    return this.binCache;
+  /**
+   * 分声道电平：[左, 右]，dBFS×10 定点（无信号为哨兵）。
+   *
+   * 算法就是"真电平"的算法，与设备 DSP 做的一样：
+   *   时域样本 → **RMS（均方根）** → 20·log10 → dBFS
+   * 经典细节：满幅**正弦**的 RMS = 1/√2 ≈ 0.707 → **-3dBFS**，
+   * 只有方波才到 0dBFS。
+   */
+  readChannelLevels(): number[] {
+    for (let i = 0; i < CHANNEL_COUNT; i += 1) {
+      this.levelCache[i] = this.readLevelAt(i);
+    }
+    return this.levelCache;
   }
 
-  /**
-   * 电平（dBFS 定点 ×10，与设备推送的 level 完全同构）。
-   *
-   * 这是"真电平"的算法，和设备 DSP 做的事一样：
-   *   **RMS（均方根）= 信号的等效能量**，再取 20·log10 转成 dB。
-   * 一个经典细节：满幅**正弦**的 RMS = 1/√2 ≈ 0.707 → **-3dBFS**，
-   * 所以"看着满格"的正弦其实差 3dB，只有方波才到 0dBFS。
-   *
-   * ⚠️ 这里读的是 AnalyserNode **down-mix 之后**的单声道结果
-   *    （规范：分析前会把输入混成单声道）。要做 L/R **分声道**电平，
-   *    得在前面挂一个 ChannelSplitterNode，每个声道各接一个 AnalyserNode ——
-   *    真实调音台就是这么做的，这里为了演示简洁先取总电平。
-   */
-  readLevel(): number {
-    const analyser = this.analyser;
-    const data = this.time;
+  private readLevelAt(index: number): number {
+    const analyser = this.analysers[index];
+    const data = this.buffers[index];
     if (!analyser || !data) return LEVEL_NO_SIGNAL;
 
     analyser.getByteTimeDomainData(data);
@@ -198,10 +207,25 @@ export class AudioEngine {
     return Math.round(db * 10);
   }
 
-  /** 波形：2048 个时域点 → 256 个显示点 */
+  /**
+   * 频谱：1024 个 FFT bin → 64 个显示 bin。
+   *
+   * 用**左声道**做频谱/波形（单声道文件在 splitter 处被 up-mix，两边相同）。
+   * 真实分析仪会提供 L / R / Sum 三种拾取可选，演示取 L 足够。
+   */
+  readSpectrum(): number[] {
+    const analyser = this.analysers[0];
+    const data = this.buffers[0];
+    if (!analyser || !data) return this.binCache;
+    analyser.getByteFrequencyData(data);
+    foldToBins(data, this.binCache);
+    return this.binCache;
+  }
+
+  /** 波形：2048 个时域点 → 256 个显示点（同上，取左声道） */
   readWaveform(): number[] {
-    const analyser = this.analyser;
-    const data = this.time;
+    const analyser = this.analysers[0];
+    const data = this.buffers[0];
     if (!analyser || !data) return this.pointCache;
     analyser.getByteTimeDomainData(data);
     decimate(data, this.pointCache);
@@ -212,7 +236,9 @@ export class AudioEngine {
     this.stopSource();
     void this.ctx?.close();
     this.ctx = null;
-    this.analyser = null;
+    this.splitter = null;
+    this.analysers = [];
+    this.buffers = [];
     this.gain = null;
     this.buffer = null;
   }

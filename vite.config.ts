@@ -14,7 +14,7 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    port: 5173,
+    port: 5090,
     // 真机演示：手机连同一局域网访问（跨端适配的现场验证）
     host: true,
   },

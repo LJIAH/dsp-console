@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { WSCore } from '../core/ws-core';
 import { GATEWAY_HTTP, assembleFull } from '../assembly/profiles';
-import { CHANNELS, LEVEL_NO_SIGNAL, cmd } from '../protocol';
+import { LEVEL_NO_SIGNAL, cmd } from '../protocol';
 import type { AckPayload, Device } from '../protocol';
 import { registerRenderLoop } from '../viz/raf-loop';
 import type { MetricsSnapshot } from '../plugins/observability';
@@ -62,6 +62,9 @@ export type VizSourceKind = 'device' | 'local';
  * meters 表 —— 这样整块电平表、通道带、Mute 逻辑都不用为它开一条件。
  */
 export const LOCAL_METER_ID = '__local__';
+
+/** 本地分析虚拟设备的通道数：与本地音频的声道结构对齐（L / R 两路计量） */
+export const LOCAL_METER_CHANNELS = 2;
 
 export interface AudioUiState {
   fileName: string | null;
@@ -204,11 +207,18 @@ export function useConsole(): UseConsoleResult {
   useEffect(() => {
     if (vizSource !== 'local') return;
 
-    const levels = new Array<number>(CHANNELS).fill(LEVEL_NO_SIGNAL);
+    const levels = new Array<number>(LOCAL_METER_CHANNELS).fill(LEVEL_NO_SIGNAL);
     return registerRenderLoop(() => {
       if (!audioEngine.loaded) return;
-      // 暂停 = 没信号：电平归零，比"冻住上一帧"更符合直觉
-      levels[0] = audioEngine.playing ? audioEngine.readLevel() : LEVEL_NO_SIGNAL;
+      if (audioEngine.playing) {
+        const channels = audioEngine.readChannelLevels();
+        for (let i = 0; i < LOCAL_METER_CHANNELS; i += 1) {
+          levels[i] = channels[i] ?? LEVEL_NO_SIGNAL;
+        }
+      } else {
+        // 暂停 = 没信号：电平归零，比"冻住上一帧"更符合直觉
+        levels.fill(LEVEL_NO_SIGNAL);
+      }
       metersRef.current.set(LOCAL_METER_ID, levels);
     });
   }, [vizSource, metersRef]);

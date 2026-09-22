@@ -136,9 +136,19 @@ FrameSource（数据从哪来） → Frame（帧数据） → Renderer（怎么�
 只有方波才到 0dBFS。本地模式下这个电平被写成一台**虚拟设备**（`__local__`）塞进同一张 meters 表，
 于是电平表、通道带、dBFS 刻度**一行都不用改**。
 
-> ⚠️ 一处诚实的简化：AnalyserNode 分析前会把输入 **down-mix 成单声道**，
-> 所以本地模式只出 CH1 总电平。要做 L/R **分声道**电平，得挂 `ChannelSplitterNode`
-> 给每个声道各接一个 AnalyserNode —— 真实调音台就是这么做的。
+**L / R 分声道计量**（已实现）。音频图是：
+
+```
+source → splitter ─┬→ analyserL → merger[0] ┐
+                   └→ analyserR → merger[1] ┴→ gain → destination
+```
+
+这里藏着 Web Audio 的一个关键约束：它是 **pull 模型**，只有连到 `destination` 的路径
+才会被处理 —— 所以"只分析不接输出"的支路拿不到任何数据，必须把分析节点**串进主链路**
+（`AnalyserNode` 是透传的，不影响声音）。单声道文件会在 splitter 处被 up-mix
+（L/R 收到相同信号），这是正确行为：单声道就该在两个扬声器都响。
+
+频谱与波形取的是**左声道**（单声道文件两边相同）；真实分析仪会提供 L / R / Sum 三种拾取可选。
 
 本地分析的三个真坑（都写在 `viz/sources/web-audio-engine.ts` 的注释里）：
 AudioContext 必须在**用户手势**里 `resume()`；`decodeAudioData` 只吃 ArrayBuffer、

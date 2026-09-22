@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { MeterCanvas } from '../MeterCanvas';
 import { CHANNELS } from '../../protocol';
 import type { Device } from '../../protocol';
+import { LOCAL_METER_CHANNELS } from '../../react/useConsole';
 import type { HotPathMode, MetersStoreRef, VizSourceKind } from '../../react/useConsole';
 
 interface Props {
@@ -40,15 +41,18 @@ export function ChannelStrip({
   children,
 }: Props) {
   const localMode = vizSource === 'local';
-  // 通道数跟设备能力走（ADSP1616 → 16 / ADSP0808AEC → 8），不硬编码
-  const channelCount = selected?.channels.length ?? CHANNELS;
+  // 通道数跟"数据源"走：设备模式看设备能力（ADSP1616 → 16 / ADSP0808AEC → 8），
+  // 本地分析看音频的声道结构（L / R 两路）
+  const channelCount = localMode
+    ? LOCAL_METER_CHANNELS
+    : (selected?.channels.length ?? CHANNELS);
 
   return (
     <section className="flex min-h-0 flex-col rounded-lg border border-slate-800 bg-slate-900/40">
       <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
         <h2 className="text-xs font-medium text-slate-400">
           {localMode
-            ? '本地音频电平（CH1 · RMS → dBFS，由浏览器计算）'
+            ? '本地音频电平（L / R · RMS → dBFS，由浏览器计算）'
             : selected
               ? `${selected.name} · ${channelCount} 通道电平（dBFS · 20Hz 批量推送）`
               : '通道面板'}
