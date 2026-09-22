@@ -1,0 +1,50 @@
+@import 'tailwindcss';
+
+/*
+ * 语义色令牌：状态徽章 / 电平条 / Canvas 绘制共用同一套值，
+ * 避免"页面是绿色、canvas 里是另一种绿"。
+ *
+ * 用标准 :root 变量（而不是 Tailwind v4 的 @theme）是为了不被
+ * 编辑器的 CSS 解析器误报 —— 需要生成工具类（bg-online 之类）时再迁到 @theme。
+ */
+:root {
+  --color-online: oklch(0.75 0.19 150);
+  --color-degraded: oklch(0.82 0.16 85);
+  --color-fault: oklch(0.65 0.21 25);
+  --font-mono:
+    ui-monospace, 'SF Mono', 'JetBrains Mono', Consolas, 'Courier New',
+    monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* 数字与时间戳统一等宽 + 等宽数字，刷新时不抖动 */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 事件时间轴新条目：轻量淡入，避免"硬插入" */
+@keyframes event-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "dsp-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "数字音频设备 Web 控制台 —— 插件化 WebSocket 客户端 + 故障注入演示",
+  "scripts": {
+    "dev": "vite",
+    "server": "node server/index.mjs",
+    "start": "concurrently -n gateway,web -c yellow,cyan \"pnpm server\" \"pnpm dev\"",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "ws": "^8.21.3",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}
