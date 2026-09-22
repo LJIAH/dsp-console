@@ -12,9 +12,13 @@
  *   source → splitter ─┬→ analyserL → merger[0] ┐
  *                      └→ analyserR → merger[1] ┴→ gain → destination
  *
- *   为什么要 merger：Web Audio 是 **pull 模型** —— 只有连到 destination
- *   的路径才会被处理。所以"只分析不接输出"的支路拿不到任何数据，
- *   必须把分声道分析**串进主链路**（AnalyserNode 是透传的，不影响声音）。
+ *   ⚠️ 为什么要 merger：`ChannelSplitterNode` 的输出是**两路单声道**，
+ *   不按索引合回 2 声道，就没法正常送 destination（也就谈不上"保留 L/R 结构"）。
+ *   用 merger 合回来，才能既分声道计量、又正确出声。
+ *
+ *   AnalyserNode 是**透传**节点，而且**不需要输出连接也能工作**
+ *   （MDN 原文："即使未连接到输出它也能正常工作"）——
+ *   把它串在链上只是为了少建支路：一路 splitter 输出同时喂给计量与输出。
  *
  *   单声道文件会在 splitter 处被 up-mix（L/R 收到相同信号）——
  *   这是正确行为：单声道就该在两个扬声器都响。
