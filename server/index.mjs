@@ -18,7 +18,14 @@ import { WebSocketServer } from 'ws';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const DEVICE_COUNT = 10;
-const CHANNELS = 16;
+/**
+ * 型号 → 通道数（真实产品线：ADSP1616 = 16 进 16 出，ADSP0808AEC = 8 进 8 出）。
+ * 通道数是**设备能力**，不是界面常量 —— 前端的列数跟着 device.channels 走。
+ */
+const MODELS = [
+  { model: 'ADSP1616', channels: 16 },
+  { model: 'ADSP0808AEC', channels: 8 },
+];
 const LEVEL_NO_SIGNAL = -999;
 /** 电平推送频率：20Hz 批量（协议约定 10~20Hz，UI 只看得到 20~30fps） */
 const METER_INTERVAL_MS = 50;
@@ -44,14 +51,16 @@ const makeBootId = () => `b${(++bootSeq).toString(36)}${Math.random().toString(3
 const devices = new Map();
 for (let i = 1; i <= DEVICE_COUNT; i += 1) {
   const id = `dev-${String(i).padStart(3, '0')}`;
+  // 每 3 台混一台 8 进 8 出的机型 —— 方便在界面上一眼看出「通道数跟设备走」
+  const spec = i % 3 === 0 ? MODELS[1] : MODELS[0];
   devices.set(id, {
     deviceId: id,
     name: `DSP-${String(i).padStart(2, '0')}`,
-    model: i % 3 === 0 ? 'ADSP0808AEC' : 'ADSP1616',
+    model: spec.model,
     online: true,
     bootId: makeBootId(),
     fw: '1.4.2',
-    channels: Array.from({ length: CHANNELS }, (_, k) => ({
+    channels: Array.from({ length: spec.channels }, (_, k) => ({
       ch: k + 1,
       level: LEVEL_NO_SIGNAL,
       muted: false,

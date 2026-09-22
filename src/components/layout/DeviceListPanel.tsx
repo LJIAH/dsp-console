@@ -26,7 +26,7 @@ export function DeviceListPanel({ devices, selectedId, onSelect }: Props) {
               <span className="flex flex-col">
                 <span className="font-medium">{d.name}</span>
                 <span className="num text-[10px] text-slate-500">
-                  {d.deviceId} · {d.model}
+                  {d.deviceId} · {d.model} · {d.channels.length}ch
                 </span>
               </span>
               <span className="flex items-center gap-1.5">

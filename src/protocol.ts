@@ -44,10 +44,18 @@ export const levelCodec = {
 };
 
 // ── 数据模型 ────────────────────────────────────────────────────
+/**
+ * 默认通道数（虚拟设备与兜底用）。
+ * ⚠️ 真实设备的通道数以 `device.channels.length` 为准 —— 这是**设备能力**：
+ * ADSP1616 是 16 进 16 出、ADSP0808AEC 是 8 进 8 出，界面列数应该跟着设备走。
+ */
 export const CHANNELS = 16;
 
+/** 协议上限：单台设备的通道数（防止畸形数据把界面撑爆） */
+export const MAX_CHANNELS = 32;
+
 const ChannelSchema = z.object({
-  ch: z.number().int().min(1).max(CHANNELS),
+  ch: z.number().int().min(1).max(MAX_CHANNELS),
   /** 电平（×10 定点），或 -999 无信号 */
   level: z.number().int().min(LEVEL_NO_SIGNAL).max(LEVEL_MAX_DB10),
   muted: z.boolean(),
@@ -64,7 +72,8 @@ export const DeviceSchema = z.object({
   /** 设备本次上电的 ID：变化 = 设备重启 → 序号归零、需拉全量 */
   bootId: z.string(),
   fw: z.string(),
-  channels: z.array(ChannelSchema).length(CHANNELS),
+  /** ⚠️ 数组长度就是这台设备的通道数（ADSP1616 → 16，ADSP0808AEC → 8） */
+  channels: z.array(ChannelSchema).min(1).max(MAX_CHANNELS),
 });
 
 export type Device = z.infer<typeof DeviceSchema>;
@@ -86,7 +95,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
       devices: z.array(
         z.object({
           deviceId: z.string(),
-          levels: z.array(z.number().int()).length(CHANNELS),
+          levels: z.array(z.number().int()).min(1).max(MAX_CHANNELS),
         }),
       ),
     }),

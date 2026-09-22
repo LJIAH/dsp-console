@@ -40,6 +40,8 @@ export function ChannelStrip({
   children,
 }: Props) {
   const localMode = vizSource === 'local';
+  // 通道数跟设备能力走（ADSP1616 → 16 / ADSP0808AEC → 8），不硬编码
+  const channelCount = selected?.channels.length ?? CHANNELS;
 
   return (
     <section className="flex min-h-0 flex-col rounded-lg border border-slate-800 bg-slate-900/40">
@@ -48,7 +50,7 @@ export function ChannelStrip({
           {localMode
             ? '本地音频电平（CH1 · RMS → dBFS，由浏览器计算）'
             : selected
-              ? `${selected.name} · 16 通道电平（dBFS · 20Hz 批量推送）`
+              ? `${selected.name} · ${channelCount} 通道电平（dBFS · 20Hz 批量推送）`
               : '通道面板'}
         </h2>
         {/* 性能 A/B：高频数据走 ref 还是进 React 状态（现场对照用） */}
@@ -77,13 +79,13 @@ export function ChannelStrip({
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-2">
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="min-h-40 flex-1 rounded-t-md border border-b-0 border-slate-800 bg-slate-950/60 p-1.5">
-            <MeterCanvas metersRef={metersRef} deviceId={meterTarget} channels={CHANNELS} />
+            <MeterCanvas metersRef={metersRef} deviceId={meterTarget} channels={channelCount} />
           </div>
           <div
             className="grid rounded-b-md border border-slate-800 bg-slate-950/40 py-1.5 pr-1.5 pl-7.5"
-            style={{ gridTemplateColumns: `repeat(${CHANNELS}, minmax(0, 1fr))` }}
+            style={{ gridTemplateColumns: `repeat(${channelCount}, minmax(0, 1fr))` }}
           >
-            {Array.from({ length: CHANNELS }, (_, i) => {
+            {Array.from({ length: channelCount }, (_, i) => {
               const muted = selected?.channels[i]?.muted ?? false;
               const disabled = !selected || localMode;
               return (
