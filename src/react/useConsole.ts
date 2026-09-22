@@ -69,6 +69,9 @@ export const LOCAL_METER_CHANNELS = 2;
 /** 拖动预览的发送节流（ms）：本地 UI 每帧跟随，网络最多 ~16 条/秒 */
 const PREVIEW_THROTTLE_MS = 60;
 
+/** 等权威值回来的兜底时长（ms）：state 丢了也不能让推子永远冻在乐观值上 */
+const GAIN_CONFIRM_TIMEOUT_MS = 2000;
+
 export interface AudioUiState {
   fileName: string | null;
   duration: number;
@@ -320,11 +323,41 @@ export function useConsole(): UseConsoleResult {
   // 60 个 pending 各自等 3s 超时重发。这里把它拆成两条通道。
   const [gainDraft, setGainDraft] = useState<{ key: string; value: number } | null>(null);
   const lastPreviewAt = useRef(0);
+  /** 权威值快照：commit 时记下"改之前是多少"，用来判断服务端 state 到没到 */
+  const devicesRef = useRef<Device[]>([]);
+  devicesRef.current = devices;
+  /**
+   * 松手后的「待确认目标」。
+   * ⚠️ 乐观值的生命周期是**权威值追上**为止，而不是"松手"为止 ——
+   * 松手立刻清 draft 会闪回旧值（服务端 state 还在路上），
+   * 用户看到的就是"弹回去、再跳出来"。
+   */
+  const gainTargetRef = useRef<{ key: string; value: number; before?: number } | null>(null);
+  const gainClearTimer = useRef<number | null>(null);
+
+  const releaseGainDraft = useCallback((key: string) => {
+    if (gainTargetRef.current?.key === key) gainTargetRef.current = null;
+    if (gainClearTimer.current !== null) {
+      window.clearTimeout(gainClearTimer.current);
+      gainClearTimer.current = null;
+    }
+    setGainDraft((d) => (d?.key === key ? null : d));
+  }, []);
 
   const previewGain = useCallback(
     (deviceId: string, ch: number, gain: number) => {
+      const key = `${deviceId}:${ch}`;
+      // 用户又动手了：任何"待确认"都作废 —— 这次拖动才是最新意图。
+      // ⚠️ 不能只在 key 不同时才清：松手后**立刻再拖同一路**时 key 相同，
+      //    上一轮的待确认状态会一直活到 state 到达，然后把正在拖的推子拽走
+      //    —— 这就是"我滑的时候被弹回去"。
+      if (gainTargetRef.current) {
+        if (gainClearTimer.current !== null) window.clearTimeout(gainClearTimer.current);
+        gainClearTimer.current = null;
+        gainTargetRef.current = null;
+      }
       // 本地 UI 每帧跟随（乐观值），网络侧节流到 ~16 条/秒
-      setGainDraft({ key: `${deviceId}:${ch}`, value: gain });
+      setGainDraft({ key, value: gain });
       const now = performance.now();
       if (now - lastPreviewAt.current < PREVIEW_THROTTLE_MS) return;
       lastPreviewAt.current = now;
@@ -335,12 +368,42 @@ export function useConsole(): UseConsoleResult {
 
   const commitGain = useCallback(
     async (deviceId: string, ch: number, gain: number) => {
-      // 交还给「权威值」：服务端随后推的 state 会校正最终值（可能被 clamp）
-      setGainDraft(null);
-      return client.sendCommand((seq) => cmd.setGain(seq, deviceId, ch, gain));
+      const key = `${deviceId}:${ch}`;
+      const before = devicesRef.current.find((d) => d.deviceId === deviceId)?.channels[ch - 1]
+        ?.gain;
+      // 乐观值继续留着，等服务端 state 到达（或超时兜底）再交还权威值
+      gainTargetRef.current = { key, value: gain, before };
+      if (gainClearTimer.current !== null) window.clearTimeout(gainClearTimer.current);
+      gainClearTimer.current = window.setTimeout(() => {
+        releaseGainDraft(key);
+      }, GAIN_CONFIRM_TIMEOUT_MS);
+
+      try {
+        const res = await client.sendCommand((seq) => cmd.setGain(seq, deviceId, ch, gain));
+        // 设备明确拒绝时"弹回"才是正确的 —— 指令确实没生效
+        if (!res.ok) releaseGainDraft(key);
+        return res;
+      } catch (err) {
+        releaseGainDraft(key);
+        throw err;
+      }
     },
-    [client],
+    [client, releaseGainDraft],
   );
+
+  // 权威值到达 → 交还控制权。这一步就是"松手不闪回"的关键。
+  useEffect(() => {
+    const target = gainTargetRef.current;
+    if (!target) return;
+    const [deviceId, chStr] = target.key.split(':');
+    const authority = devices.find((d) => d.deviceId === deviceId)?.channels[Number(chStr) - 1]
+      ?.gain;
+    if (authority === undefined) return;
+    // 追上目标（正常路径），或已被设备改成别的值（clamp / 他人改动）→ 本轮结束
+    if (Math.abs(authority - target.value) < 1e-6 || authority !== target.before) {
+      releaseGainDraft(target.key);
+    }
+  }, [devices, releaseGainDraft]);
 
   // ── 故障注入（走网关 REST，前端只是按钮） ───────────────────
   const chaos = useCallback(async (name: string) => {

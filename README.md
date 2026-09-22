@@ -159,7 +159,54 @@ AudioContext 必须在**用户手势**里 `resume()`；`decodeAudioData` 只吃 
 
 ---
 
-## 七、目录结构
+## 七、滑块：一个控件，三个时机
+
+16 路增益推子。滑块本身不难，难的是**什么时候发指令** —— 教学版 Demo 的写法是
+`onChange` 直接发可靠指令，拖 1 秒 = 60 条指令 + 60 个 pending 各自等 3s 超时重发。
+
+| 时机              | 通道                  | 协议                       | 网关行为                           |
+| ----------------- | --------------------- | -------------------------- | ---------------------------------- |
+| 拖动中            | `send`（可丢）        | `setGainPreview`（无 seq） | 只改状态：不回 ack、**不推 state** |
+| 松手              | `sendCommand`（可靠） | `setGain`（seq + ack）     | 应用 → ack(read-back) → 推 state   |
+| 键盘 ↑↓/PgUp/PgDn | 同上                  | 同上                       | 同松手                             |
+
+三个决策，每个都对应一个坑：
+
+1. **预览不回 ack、不推 state**。否则拖动 1 秒就是几十条全量 state 洪水，
+   还会和本地乐观值互相打架。预览是"尽力而为"，丢了无所谓（下一条覆盖它）。
+2. **乐观值的寿命到「权威值追上」为止，不是到「松手」为止**。
+   松手即交还会闪回旧值（服务端 state 还在路上）—— 用 CDP 真实鼠标 +
+   `MutationObserver` 全量记录 `aria-valuenow`，实测抓到过：
+
+   ```
+   t=500ms  值=6     拖动到最后
+   t=631ms  值=7     ← 松手瞬间弹回旧权威值
+   t=645ms  值=6     ← state 到达才跳回来
+   ```
+
+   现在：commit 记下目标值 + 改之前的权威值 → 该通道 gain 真的变了才交还控制权；
+   2s 超时兜底（state 丢了也不能冻在乐观值上）；设备明确拒绝（`ack.ok=false`）时
+   立即回滚 —— 那时候的"弹回"才是正确的。
+
+3. **任何新拖动都作废上一轮待确认**。否则"松手后立刻再拖同一路"时，
+   上一轮的 state 会把正在拖的推子拽走。
+
+另有两处健壮性：`setPointerCapture` 包 `try/catch`（它一旦抛出会中断整个
+pointerdown handler —— 推子彻底没反应，异常还会冒到 React 错误边界）；
+补 `onLostPointerCapture` / `onPointerCancel` 兜底（捕获意外丢失时 `dragging`
+会卡在 true —— 之后鼠标一动推子就跟着乱跳，且这次调整永远不会被提交）。
+
+**语义**：滑块控制 `gain`（控制量，-12 ~ +12 dB），不是 `level`（测量值，设备实测、
+不可设定）。网关里增益**真的参与电平生成**（`level = base + gain×10 + noise`），
+所以拖推子时电平柱会跟着抬起来。
+
+推子是自绘的（不是 `<input type="range">`）：竖排 range 依赖 `writing-mode`，
+跨浏览器与移动端的观感/手感不一致；自绘还能复用通道带那套像素级对齐规则，
+并带上 `role="slider"` + `aria-valuetext` + 键盘操作。
+
+---
+
+## 八、目录结构
 
 ```
 src/
@@ -181,7 +228,7 @@ server/index.mjs          Mock 网关（Express + ws noServer + chaos API + 数�
 
 ---
 
-## 八、还没做的（按优先级）
+## 九、还没做的（按优先级）
 
 1. **协议契约目录** `protocol/`（JSON Schema + limits.md + 边界表，与网关共用一份）
 2. **单元测试**：backoff 纯函数 / 状态机迁移 / MockWebSocket + fake timers 验退避

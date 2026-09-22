@@ -103,7 +103,14 @@ function Fader({ value, disabled, label, onChange, onCommit }: FaderProps) {
       title={`${text}（拖动=预览，松手=下发；键盘 ↑↓ 可调）`}
       onPointerDown={(e) => {
         if (disabled) return;
-        e.currentTarget.setPointerCapture(e.pointerId);
+        // 捕获可能失败（pointerId 无效、元素已卸载、平台差异）。
+        // 它一旦抛出就会中断整个 handler —— 推子彻底没反应，异常还会冒到 React 错误边界。
+        // 降级成"无捕获"：指针移出元素会丢 move，但点击定位仍然有效。
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          /* 忽略：降级为无捕获模式 */
+        }
         dragging.current = true;
         onChange(valueAt(e.clientY));
       }}
@@ -114,12 +121,27 @@ function Fader({ value, disabled, label, onChange, onCommit }: FaderProps) {
       onPointerUp={(e) => {
         if (!dragging.current) return;
         dragging.current = false;
-        e.currentTarget.releasePointerCapture(e.pointerId);
+        try {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+          /* 本来就没捕获成功，忽略 */
+        }
         // 用松手位置现算，避免 props 滞后一帧拿到旧值
         onCommit(valueAt(e.clientY));
       }}
       onPointerCancel={() => {
+        // 系统手势中断（移动端常见）：用户已经拖到哪就是哪，按所见即所得提交
+        if (!dragging.current) return;
         dragging.current = false;
+        onCommit(value);
+      }}
+      onLostPointerCapture={() => {
+        // 兜底：捕获意外丢失（拖出窗口、系统弹窗、切窗口……）时也必须收尾。
+        // 否则 dragging 卡在 true —— 之后鼠标一动推子就跟着乱跳，
+        // 而且这一次调整永远不会被提交，等权威值回来就成了"被弹回去"。
+        if (!dragging.current) return;
+        dragging.current = false;
+        onCommit(value);
       }}
       onKeyDown={(e) => {
         if (disabled) return;
