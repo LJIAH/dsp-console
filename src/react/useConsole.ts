@@ -384,8 +384,11 @@ export function useConsole(): UseConsoleResult {
         if (!res.ok) releaseGainDraft(key);
         return res;
       } catch (err) {
+        // 超时 / 断线：回滚乐观值，并把失败**作为返回值**交出去。
+        // ⚠️ 不要 throw —— UI 的 onCommit 是同步调用点，throw 会变成 unhandled
+        // rejection：用户只在控制台看到一行红字，界面上反而没有任何反馈。
         releaseGainDraft(key);
-        throw err;
+        return { seq: 0, ok: false, msg: err instanceof Error ? err.message : String(err) };
       }
     },
     [client, releaseGainDraft],

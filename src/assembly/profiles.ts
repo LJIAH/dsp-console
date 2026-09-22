@@ -111,7 +111,14 @@ export const profiles = {
         ackTimeout: opts.ackTimeout ?? 3_000,
         maxRetry: opts.maxRetry ?? 3,
       })
-      .use(outboxPlugin(), { outboxLimit: opts.outboxLimit ?? 200 })
+      .use(
+        outboxPlugin({
+          // 拖动预览是「下一条覆盖它」的实时量：断线期间补发毫无意义，
+          // 却会以每秒十几条的速率把队列塞满。不发，也不入队。
+          isVolatile: (msg) => (msg as { type?: string } | null)?.type === 'setGainPreview',
+        }),
+        { outboxLimit: opts.outboxLimit ?? 200 },
+      )
       .use(backpressurePlugin(), { highWater: opts.highWater ?? 5 * 1024 * 1024 })
       .use(sessionPlugin(), { snapshotUrl: opts.snapshotUrl ?? `${GATEWAY_HTTP}/api/devices` })
       .use(visibilityPlugin())

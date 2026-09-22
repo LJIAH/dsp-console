@@ -7,22 +7,47 @@
  * ⚠️ 顺序敏感：必须在 backpressure 之前 use。
  *    backpressure 的拦截器第一步就是 `if (!isOpen()) return`（丢新保实时），
  *    若它在前，断线期间的消息会被它先拦掉，outbox 永远收不到货。
+ *
+ * ⚠️ 「入队」也要分性质：像拖动预览这种**下一条会覆盖它**的实时量，补发没有任何意义，
+ *    却照样把队列塞满（60ms 节流下每秒 10~16 条，十几秒就顶到上限），
+ *    同时把真正需要补发的消息（订阅、定值）挤出去 —— 所以支持 volatile 判定。
  */
 import type { Plugin } from '../core/ws-core';
 
-export function outboxPlugin(): Plugin {
+export interface OutboxOptions {
+  /** 队列上限（默认取 ctx.opts.outboxLimit，再退到 200），满了丢最旧 */
+  limit?: number;
+  /**
+   * 易失判定：返回 true = 断线期间**直接丢弃**，不入队。
+   * 判据只有一条：**这条消息过期后还有没有价值**。
+   *   · setGainPreview（拖动预览）—— 没有，下一条就覆盖它 → volatile
+   *   · subscribe / setGain（定值）—— 有，必须让设备收到 → 入队
+   */
+  isVolatile?: (data: unknown) => boolean;
+}
+
+export function outboxPlugin(options: OutboxOptions = {}): Plugin {
   return {
     name: 'outbox',
     setup(ctx) {
       const queue: unknown[] = [];
-      const limit = () => ctx.opts.outboxLimit ?? 200;
+      const limit = () => options.limit ?? ctx.opts.outboxLimit ?? 200;
+      const isVolatile = options.isVolatile ?? (() => false);
+      let dropped = 0;
 
       ctx.addSendInterceptor((data, next) => {
         if (ctx.isOpen()) {
           next(data);
           return;
         }
-        // 未连接：入队而不是丢弃。不调 next = 本条不发（等待重连补发）
+        // 未连接。
+        // ① 易失消息直接丢：补发无意义，还会挤占队列
+        if (isVolatile(data)) {
+          dropped += 1;
+          ctx.emit('outbox:dropped', { dropped, size: queue.length });
+          return;
+        }
+        // ② 其余入队等重连补发。不调 next = 本条不发
         queue.push(data);
         if (queue.length > limit()) queue.shift();
         ctx.emit('outbox:queued', { size: queue.length });
@@ -50,6 +75,7 @@ export function outboxPlugin(): Plugin {
       ctx.onTeardown(() => queue.splice(0, queue.length));
 
       ctx.expose('getOutboxSize', () => queue.length);
+      ctx.expose('getOutboxDropped', () => dropped);
     },
   };
 }
