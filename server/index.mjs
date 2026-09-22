@@ -417,6 +417,22 @@ server.listen(PORT, () => {
   log(`故障注入    POST http://localhost:${PORT}/api/chaos/{drop|half-open|dirty|invalid|no-ack|restore}`);
 });
 
+/**
+ * 端口冲突时给人话，而不是 20 行堆栈 + [ELIFECYCLE]。
+ * 最常见的成因：上一个网关进程没退干净（Ctrl+C 只杀掉了 concurrently，
+ * 子进程被留在后台）。这类问题在演示现场出现最尴尬 —— 一行提示能省十分钟。
+ */
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    log(`端口 ${PORT} 已被占用 —— 多半是上一个网关进程还在后台跑。`);
+    log(`  查占用  Windows: netstat -ano | findstr :${PORT}`);
+    log(`  结束它  Windows: taskkill /PID <pid> /F`);
+    log(`          macOS/Linux: lsof -ti:${PORT} | xargs kill`);
+    process.exit(1);
+  }
+  throw err;
+});
+
 process.on('SIGINT', () => {
   log('退出');
   process.exit(0);

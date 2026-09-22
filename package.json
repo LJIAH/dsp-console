@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "server": "node server/index.mjs",
-    "start": "concurrently -n gateway,web -c yellow,cyan \"pnpm server\" \"pnpm dev\"",
+    "start": "concurrently -n gateway,web -c yellow,cyan --kill-others-on-fail \"pnpm server\" \"pnpm dev\"",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },
