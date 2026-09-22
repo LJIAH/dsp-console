@@ -71,6 +71,9 @@ for (let i = 1; i <= DEVICE_COUNT; i += 1) {
   });
 }
 
+/** 增益边界：-12 ~ +12 dB、0.5 步进（与协议 ChannelSchema 的约定一致） */
+const clampGain = (v) => Math.max(-12, Math.min(12, Math.round((Number(v) || 0) * 2) / 2));
+
 /** 出协议前显式挑字段：内部字段（base）绝不外泄（协议字段白名单） */
 const cloneChannel = (c) => ({ ch: c.ch, level: c.level, muted: c.muted, gain: c.gain });
 const cloneDevice = (d) => ({ ...d, channels: d.channels.map(cloneChannel) });
@@ -241,6 +244,33 @@ function handleMessage(ws, msg) {
       break;
     }
 
+    // 增益定值（可靠）：回 ack + 推 state
+    case 'setGain': {
+      const d = devices.get(msg.payload?.deviceId);
+      const ch = d?.channels[(msg.payload?.ch ?? 0) - 1];
+      if (!d || !ch) {
+        return ack(ws, msg.seq, false, {
+          code: 1002,
+          msg: 'device/channel not found',
+          retryable: false,
+        });
+      }
+      ch.gain = clampGain(msg.payload.gain);
+      ack(ws, msg.seq, true, { applied: ch.gain });
+      send(ws, { type: 'state', ts: Date.now(), payload: { device: cloneDevice(d) } });
+      break;
+    }
+
+    // 增益预览（可丢）：只改状态，**不回 ack、不推 state**
+    // 既省链路，也避免高频 state 与正在拖动的本地乐观值互相打架
+    case 'setGainPreview': {
+      const d = devices.get(msg.payload?.deviceId);
+      const ch = d?.channels[(msg.payload?.ch ?? 0) - 1];
+      if (!d || !ch) return;
+      ch.gain = clampGain(msg.payload.gain);
+      break;
+    }
+
     default:
       send(ws, {
         type: 'error',
@@ -270,7 +300,11 @@ setInterval(() => {
       c.base += (Math.random() - 0.5) * 10;
       if (Math.random() < 0.02) c.base += (Math.random() - 0.5) * 80; // 瞬态
       c.base = Math.max(-560, Math.min(-40, c.base));
-      c.level = Math.round(Math.max(-600, Math.min(0, c.base + (Math.random() - 0.5) * 14)));
+      // 「增益」真的参与电平计算：+6dB 增益 → 电平抬 6dB。
+      // 这是真实设备的反应，也是拖动推子时柱子会跟着动的演示点。
+      c.level = Math.round(
+        Math.max(-600, Math.min(0, c.base + c.gain * 10 + (Math.random() - 0.5) * 14)),
+      );
     }
     batch.push({ deviceId: d.deviceId, levels: d.channels.map((c) => c.level) });
   }

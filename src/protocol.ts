@@ -191,6 +191,27 @@ export type ClientMessage =
       ts: number;
       seq: number;
       payload: { deviceId: string; ch: number; level: number };
+    }
+  /**
+   * 增益设定（**可靠指令**）：松手那一刻发，seq + ack + 超时重发。
+   * ⚠️ gain 与 level 的区别：level 是**测量值**（设备实测电平，不可设定），
+   *    gain 才是**控制量**（-12 ~ +12 dB）—— 滑块控制的必须是后者。
+   */
+  | {
+      type: 'setGain';
+      ts: number;
+      seq: number;
+      payload: { deviceId: string; ch: number; gain: number };
+    }
+  /**
+   * 增益**预览**（**可丢指令**）：拖动过程中约 16 次/秒发送，不带 seq、不回 ack。
+   * 丢了无所谓 —— 下一条会覆盖它；服务端也不会为它推 state，
+   * 否则拖动 1 秒就是几十条全量 state 洪水，反而把界面搞乱。
+   */
+  | {
+      type: 'setGainPreview';
+      ts: number;
+      payload: { deviceId: string; ch: number; gain: number };
     };
 
 export const cmd = {
@@ -212,6 +233,19 @@ export const cmd = {
     ts: Date.now(),
     seq,
     payload: { deviceId, ch, level },
+  }),
+  /** 增益定值：走可靠通道（sendCommand → seq + ack） */
+  setGain: (seq: number, deviceId: string, ch: number, gain: number): ClientMessage => ({
+    type: 'setGain',
+    ts: Date.now(),
+    seq,
+    payload: { deviceId, ch, gain },
+  }),
+  /** 增益预览：走 send（可丢、不入可靠通道），拖动过程中高频发送 */
+  setGainPreview: (deviceId: string, ch: number, gain: number): ClientMessage => ({
+    type: 'setGainPreview',
+    ts: Date.now(),
+    payload: { deviceId, ch, gain },
   }),
   /** 聚焦设备：非可靠指令（丢了也只是收不到高频帧，重发无意义） */
   focus: (deviceId: string | null): ClientMessage => ({

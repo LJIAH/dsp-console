@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { MeterCanvas } from '../MeterCanvas';
+import { GainFaders } from './GainFaders';
 import { CHANNELS } from '../../protocol';
 import type { Device } from '../../protocol';
 import { LOCAL_METER_CHANNELS } from '../../react/useConsole';
@@ -15,6 +16,10 @@ interface Props {
   hotPath: HotPathMode;
   onHotPathChange: (mode: HotPathMode) => void;
   onToggleMute: (deviceId: string, ch: number, muted: boolean) => void;
+  /** 增益推子：拖动中的乐观值 + 两个时机的回调（预览 / 定值） */
+  gainDraft: { key: string; value: number } | null;
+  onGainPreview: (deviceId: string, ch: number, gain: number) => void;
+  onGainCommit: (deviceId: string, ch: number, gain: number) => void;
   /** 通道带下方的扩展区（可视化管线挂这里，但本组件不认识它） */
   children?: ReactNode;
 }
@@ -38,6 +43,9 @@ export function ChannelStrip({
   hotPath,
   onHotPathChange,
   onToggleMute,
+  gainDraft,
+  onGainPreview,
+  onGainCommit,
   children,
 }: Props) {
   const localMode = vizSource === 'local';
@@ -57,26 +65,35 @@ export function ChannelStrip({
               ? `${selected.name} · ${channelCount} 通道电平（dBFS · 20Hz 批量推送）`
               : '通道面板'}
         </h2>
-        {/* 性能 A/B：高频数据走 ref 还是进 React 状态（现场对照用） */}
-        <div className="flex items-center gap-1 rounded-md border border-slate-700 p-0.5 text-[10px]">
-          <button
-            className={`rounded px-2 py-0.5 transition ${
-              hotPath === 'ref' ? 'bg-slate-700 text-slate-100' : 'text-slate-500'
-            }`}
-            onClick={() => onHotPathChange('ref')}
-            title="高频数据直写 ref，Canvas 直读：零 React 渲染"
-          >
-            高频旁路
-          </button>
-          <button
-            className={`rounded px-2 py-0.5 transition ${
-              hotPath === 'state' ? 'bg-rose-500/30 text-rose-200' : 'text-slate-500'
-            }`}
-            onClick={() => onHotPathChange('state')}
-            title="每条 meters 消息触发一次 React 渲染（对照组）"
-          >
-            全量渲染
-          </button>
+        <div className="flex items-center gap-2">
+          {/* 拖动中同步显示当前通道增益（16 列太挤，不在推子上塞数字） */}
+          {gainDraft && (
+            <span className="num text-[10px] text-sky-300">
+              CH{gainDraft.key.split(':')[1]} · {gainDraft.value > 0 ? '+' : ''}
+              {gainDraft.value.toFixed(1)} dB
+            </span>
+          )}
+          {/* 性能 A/B：高频数据走 ref 还是进 React 状态（现场对照用） */}
+          <div className="flex items-center gap-1 rounded-md border border-slate-700 p-0.5 text-[10px]">
+            <button
+              className={`rounded px-2 py-0.5 transition ${
+                hotPath === 'ref' ? 'bg-slate-700 text-slate-100' : 'text-slate-500'
+              }`}
+              onClick={() => onHotPathChange('ref')}
+              title="高频数据直写 ref，Canvas 直读：零 React 渲染"
+            >
+              高频旁路
+            </button>
+            <button
+              className={`rounded px-2 py-0.5 transition ${
+                hotPath === 'state' ? 'bg-rose-500/30 text-rose-200' : 'text-slate-500'
+              }`}
+              onClick={() => onHotPathChange('state')}
+              title="每条 meters 消息触发一次 React 渲染（对照组）"
+            >
+              全量渲染
+            </button>
+          </div>
         </div>
       </div>
 
@@ -85,8 +102,17 @@ export function ChannelStrip({
           <div className="min-h-40 flex-1 rounded-t-md border border-b-0 border-slate-800 bg-slate-950/60 p-1.5">
             <MeterCanvas metersRef={metersRef} deviceId={meterTarget} channels={channelCount} />
           </div>
+          {/* 增益推子行：与电平表、静音键同一套对齐规则 */}
+          <GainFaders
+            device={selected}
+            channelCount={channelCount}
+            draft={gainDraft}
+            onPreview={onGainPreview}
+            onCommit={onGainCommit}
+            disabled={localMode}
+          />
           <div
-            className="grid rounded-b-md border border-slate-800 bg-slate-950/40 py-1.5 pr-1.5 pl-7.5"
+            className="grid rounded-b-md border border-t-0 border-slate-800 bg-slate-950/40 py-1.5 pr-1.5 pl-7.5"
             style={{ gridTemplateColumns: `repeat(${channelCount}, minmax(0, 1fr))` }}
           >
             {Array.from({ length: channelCount }, (_, i) => {

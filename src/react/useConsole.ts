@@ -66,6 +66,9 @@ export const LOCAL_METER_ID = '__local__';
 /** 本地分析虚拟设备的通道数：与本地音频的声道结构对齐（L / R 两路计量） */
 export const LOCAL_METER_CHANNELS = 2;
 
+/** 拖动预览的发送节流（ms）：本地 UI 每帧跟随，网络最多 ~16 条/秒 */
+const PREVIEW_THROTTLE_MS = 60;
+
 export interface AudioUiState {
   fileName: string | null;
   duration: number;
@@ -87,6 +90,12 @@ export interface UseConsoleResult {
   select: (id: string) => void;
   setMuted: (deviceId: string, ch: number, muted: boolean) => Promise<AckPayload>;
   setLevel: (deviceId: string, ch: number, level: number) => Promise<AckPayload>;
+  /** 增益预览的乐观值（拖动中）：key = `deviceId:ch`，同一时刻只会有一个 */
+  gainDraft: { key: string; value: number } | null;
+  /** 拖动中调用：本地立即跟随 + 节流发「可丢预览指令」 */
+  previewGain: (deviceId: string, ch: number, gain: number) => void;
+  /** 松手/键盘调整后调用：发「可靠定值指令」并等待 ack */
+  commitGain: (deviceId: string, ch: number, gain: number) => Promise<AckPayload>;
   chaos: (name: string) => Promise<string>;
   reconnectInfo: () => ReturnType<WSCore['getReconnectInfo']>;
   /** 频谱 / 波形：帧存储与渲染器（交给 VizCanvas） */
@@ -306,6 +315,33 @@ export function useConsole(): UseConsoleResult {
     [client],
   );
 
+  // ── 增益滑块：拖动走「可丢预览」，松手走「可靠定值」 ──────────
+  // 教学版那个 Demo 的坑就是 onInput 直接发可靠指令：拖 1 秒 = 60 条指令 +
+  // 60 个 pending 各自等 3s 超时重发。这里把它拆成两条通道。
+  const [gainDraft, setGainDraft] = useState<{ key: string; value: number } | null>(null);
+  const lastPreviewAt = useRef(0);
+
+  const previewGain = useCallback(
+    (deviceId: string, ch: number, gain: number) => {
+      // 本地 UI 每帧跟随（乐观值），网络侧节流到 ~16 条/秒
+      setGainDraft({ key: `${deviceId}:${ch}`, value: gain });
+      const now = performance.now();
+      if (now - lastPreviewAt.current < PREVIEW_THROTTLE_MS) return;
+      lastPreviewAt.current = now;
+      client.send(cmd.setGainPreview(deviceId, ch, gain));
+    },
+    [client],
+  );
+
+  const commitGain = useCallback(
+    async (deviceId: string, ch: number, gain: number) => {
+      // 交还给「权威值」：服务端随后推的 state 会校正最终值（可能被 clamp）
+      setGainDraft(null);
+      return client.sendCommand((seq) => cmd.setGain(seq, deviceId, ch, gain));
+    },
+    [client],
+  );
+
   // ── 故障注入（走网关 REST，前端只是按钮） ───────────────────
   const chaos = useCallback(async (name: string) => {
     const res = await fetch(`${GATEWAY_HTTP}/api/chaos/${name}`, { method: 'POST' });
@@ -328,6 +364,9 @@ export function useConsole(): UseConsoleResult {
     select: setSelectedId,
     setMuted,
     setLevel,
+    gainDraft,
+    previewGain,
+    commitGain,
     chaos,
     reconnectInfo,
     spectrumStore,

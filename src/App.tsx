@@ -24,6 +24,9 @@ export default function App() {
     selectedId,
     select,
     setMuted,
+    gainDraft,
+    previewGain,
+    commitGain,
     chaos,
     reconnectInfo,
     spectrumStore,
@@ -70,6 +73,9 @@ export default function App() {
           hotPath={hotPath}
           onHotPathChange={setHotPath}
           onToggleMute={setMuted}
+          gainDraft={gainDraft}
+          onGainPreview={previewGain}
+          onGainCommit={commitGain}
         >
           <VizSection
             source={vizSource}
