@@ -33,16 +33,12 @@ function composeState(core: CoreState, info: ReconnectInfo, now: number): Displa
 interface Props {
   metrics: MetricsSnapshot;
   info: ReconnectInfo;
-  /** 在途可靠指令数（⑤ 可靠指令插件） */
-  pending: number;
-  /** 离线队列长度（⑥ outbox 插件） */
-  outbox: number;
   onClose: () => void;
   onReconnect: () => void;
   onResync: () => void;
 }
 
-export function TopBar({ metrics, info, pending, outbox, onClose, onReconnect, onResync }: Props) {
+export function TopBar({ metrics, info, onClose, onReconnect, onResync }: Props) {
   const now = useNow();
   const displayState = composeState(metrics.coreState, info, now);
   const meta = STATE_META[displayState];
@@ -79,8 +75,8 @@ export function TopBar({ metrics, info, pending, outbox, onClose, onReconnect, o
         />
         <Metric label="重连" value={reconnectCount} />
         <Metric label="rtt" value={metrics.lastRtt === null ? '—' : `${metrics.lastRtt}ms`} />
-        <Metric label="在途指令" value={pending} />
-        <Metric label="outbox" value={outbox} />
+        <Metric label="在途指令" value={metrics.pending} />
+        <Metric label="outbox" value={metrics.outbox} />
       </div>
 
       <div className="ml-auto flex items-center gap-2">

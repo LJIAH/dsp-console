@@ -50,7 +50,8 @@ export function outboxPlugin(options: OutboxOptions = {}): Plugin {
         // ② 其余入队等重连补发。不调 next = 本条不发
         queue.push(data);
         if (queue.length > limit()) queue.shift();
-        ctx.emit('outbox:queued', { size: queue.length });
+        // 带上 type：队列里到底堆了什么，必须能观测（否则只能看到一个数字在动）
+        ctx.emit('outbox:queued', { size: queue.length, type: (data as { type?: string })?.type });
       });
 
       const flush = () => {
@@ -66,7 +67,11 @@ export function outboxPlugin(options: OutboxOptions = {}): Plugin {
 
       ctx.onOpen(() => {
         if (!ctx.shared.isReopen) {
-          queue.length = 0; // 首连不需要补发历史
+          // 首连不需要补发历史。
+          // ⚠️ 清空必须广播出去：观测面板的队列长度是事件驱动的，
+          //    静默清空会让界面永远显示一个已经不存在的长度。
+          queue.length = 0;
+          ctx.emit('outbox:flushed', { count: 0 });
           return;
         }
         flush();

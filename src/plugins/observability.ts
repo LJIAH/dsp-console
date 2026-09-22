@@ -27,6 +27,14 @@ export interface MetricsSnapshot {
   rx: number;
   /** 发出的消息条数（含心跳/指令） */
   tx: number;
+  /**
+   * 在途可靠指令数（⑤）与离线队列长度（⑥）。
+   * ⚠️ 必须进快照：它们原先是在 App 渲染时调 `client.getPendingCount()` 取的，
+   * 而**断线时没有任何消息能让 App 重渲染** —— 数字会冻在旧值上，
+   * 用户以为"断线时调的参数没挂住"，其实它好好挂在 pending 里等重连。
+   */
+  pending: number;
+  outbox: number;
   parseErrors: number;
   binaryFrames: number;
   heartbeatMissed: number;
@@ -48,6 +56,8 @@ export function observabilityPlugin(): Plugin {
         isReopen: false,
         rx: 0,
         tx: 0,
+        pending: 0,
+        outbox: 0,
         parseErrors: 0,
         binaryFrames: 0,
         heartbeatMissed: 0,
@@ -127,6 +137,20 @@ export function observabilityPlugin(): Plugin {
       ctx.on('command:resend', ({ seq }: { seq: number }) => {
         note('command', `重连后重发在途指令 seq=${seq}`);
       });
+      // 在途数进快照（断线时唯一能看到"操作没丢"的地方）
+      ctx.on('command:pending', ({ pending }: { pending: number }) => {
+        update({ pending });
+      });
+
+      // ── 离线队列事件 ───────────────────────────────────────────
+      ctx.on('outbox:queued', ({ size }: { size: number }) => {
+        update({ outbox: size });
+      });
+      ctx.on('outbox:flushed', () => {
+        update({ outbox: 0 });
+      });
+      // ⚠️ outbox:dropped 故意不进快照：断线拖动时它每 60ms 触发一次，
+      //    进快照就等于每 60ms 触发一次 React 重渲染 —— 那正是要避免的性能问题。
 
       // ── 流量插件事件 ───────────────────────────────────────────
       ctx.on('backpressure:dropped', ({ reason }: { reason: string }) => {

@@ -51,8 +51,6 @@ export default function App() {
       <TopBar
         metrics={metrics}
         info={reconnectInfo()}
-        pending={client.getPendingCount()}
-        outbox={client.getOutboxSize()}
         onClose={() => client.close(1000, "用户主动关闭")}
         onReconnect={() => client.start()}
         onResync={() => void client.resync().catch(() => {})}

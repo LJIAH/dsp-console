@@ -36,6 +36,13 @@ export function reliablePlugin(): Plugin {
       let seq = 0;
       const pending = new Map<number, PendingItem>();
 
+      /**
+       * pending 数变化时广播。
+       * 必要性：断线时界面没有别的变化源，TopBar 的「在途指令」若不靠事件驱动就会冻在旧值上
+       * —— 用户会以为"断线时调的参数没挂住"，其实它老老实实挂在 pending 里等重连。
+       */
+      const emitPending = () => ctx.emit('command:pending', { pending: pending.size });
+
       const ackTimeout = () => ctx.opts.ackTimeout ?? 3_000;
       const maxRetry = () => ctx.opts.maxRetry ?? 3;
 
@@ -46,6 +53,7 @@ export function reliablePlugin(): Plugin {
           if (!pending.has(item.seq)) return; // 已 ack，本次重发作废
           if (item.retry >= maxRetry()) {
             pending.delete(item.seq);
+            emitPending();
             ctx.emit('command:failed', {
               seq: item.seq,
               retry: item.retry,
@@ -66,6 +74,7 @@ export function reliablePlugin(): Plugin {
         if (!it) return true; // 迟到 / 重复的 ack：忽略但消费掉
         pending.delete(it.seq);
         if (it.timer) clearTimeout(it.timer);
+        emitPending();
         ctx.emit('command:settled', { seq: it.seq, ok: msg.payload.ok });
         if (msg.payload.ok) it.resolve(msg.payload);
         else it.reject(new CommandRejectedError(msg.payload));
@@ -86,6 +95,7 @@ export function reliablePlugin(): Plugin {
           if (item.timer) clearTimeout(item.timer);
         }
         pending.clear();
+        emitPending();
       });
 
       // expose：client.sendCommand(seq => cmd.setMuted(seq, ...))
@@ -94,6 +104,7 @@ export function reliablePlugin(): Plugin {
           const id = ++seq;
           const item: PendingItem = { seq: id, build, timer: null, retry: 0, resolve, reject };
           pending.set(id, item);
+          emitPending();
           send(item);
         });
       });
