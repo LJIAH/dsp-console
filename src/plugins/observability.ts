@@ -79,6 +79,40 @@ export function observabilityPlugin(): Plugin {
         update(patch ?? {}, { at: Date.now(), kind, text });
       };
 
+      /**
+       * rx / tx 的**批量提交**。
+       *
+       * 这两个数原本每条消息都 update() 一次 —— 实测消息率 ~30 条/秒，
+       * 等于每秒 30 次全 App 重渲染：CPU profile 里 jsxDEV 占了 20%+，
+       * 时间轴上是一整片紫色 Components，并伴随 80ms 长任务与掉帧。
+       *
+       * 但计数器是"统计量"，界面不需要 30Hz 刷新。改成累积 + 定时提交：
+       * 数字跳动的观感不变，渲染次数从 30/s 降到 2/s。
+       *
+       * ⚠️ 与"实时量"的区别：电平/频谱那种必须每帧到位的才走 ref 直写；
+       *    计数器属于"可以稍微滞后"的统计量，批量提交就够了，不必上那么重的手段。
+       */
+      let rxPending = 0;
+      let txPending = 0;
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      const commitCounters = () => {
+        if (flushTimer) return;
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          if (rxPending === 0 && txPending === 0) return;
+          const patch: Partial<MetricsSnapshot> = {};
+          if (rxPending > 0) patch.rx = snapshot.rx + rxPending;
+          if (txPending > 0) patch.tx = snapshot.tx + txPending;
+          rxPending = 0;
+          txPending = 0;
+          update(patch);
+        }, 500);
+      };
+      ctx.onTeardown(() => {
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = null;
+      });
+
       // ── 内核事件 ──────────────────────────────────────────────
       ctx.on(CoreEvents.StateChange, (e: { from: CoreState; to: CoreState }) => {
         note('state', `${e.from} → ${e.to}`, { coreState: e.to });
@@ -95,7 +129,8 @@ export function observabilityPlugin(): Plugin {
         note('socket-error', 'socket 层错误（随后必有 onclose）');
       });
       ctx.on(CoreEvents.Send, () => {
-        update({ tx: snapshot.tx + 1 });
+        txPending += 1;
+        commitCounters();
       });
 
       // ── 重连插件事件 ───────────────────────────────────────────
@@ -161,7 +196,8 @@ export function observabilityPlugin(): Plugin {
 
       // ── 消息计数：排在链前部，pong/ack 也能看到 ────────────────
       ctx.onMessage(() => {
-        update({ rx: snapshot.rx + 1 });
+        rxPending += 1;
+        commitCounters();
         return false; // ⚠️ 不消费：继续向后传递
       });
 
