@@ -1,0 +1,135 @@
+{
+  "$comment": "DSP Console 设备消息契约 v1 —— 机器可读常量（唯一来源）。前端 src/protocol.ts 与网关 server/index.mjs 都从这里取值，不再各写一份。人读文档：同目录 README.md / limits.md / errors.md / versioning.md。改这里必须跑 `pnpm test`（契约一致性用例会挡住漂移）。",
+  "protocolVersion": 1,
+
+  "wire": {
+    "$comment": "【两端共同遵守】设备侧（或它的网关）与浏览器之间的约定。嵌入式同学看这一段就够。",
+
+    "envelope": {
+      "$comment": "信封：type 必备；ts 为毫秒时间戳（发送方本地时钟，只用于展示与排序，不做时钟对齐）；seq 只出现在「可靠指令」与 meters 上，其他消息不带。",
+      "tsUnit": "ms"
+    },
+
+    "level": {
+      "$comment": "电平：dBFS 的 10 倍定点整数（不传浮点，省字节也免掉浮点比较）。-999 是哨兵 —— 物理上不可能出现的值，用来表示『无信号』，避免用 0 冒充『静音』。",
+      "wireUnit": "dBFS×10",
+      "min": -600,
+      "max": 0,
+      "noSignal": -999
+    },
+
+    "gain": {
+      "$comment": "增益：控制量（可设定）。与 level（测量值，不可设定）是两个字段 —— 滑块控制的必须是 gain。契约只约束范围，不强制 0.5 步进（那是 UI 的手感）；网关会把值归一到 0.5 的整数倍。",
+      "unit": "dB",
+      "min": -12,
+      "max": 12,
+      "step": 0.5
+    },
+
+    "channel": {
+      "$comment": "通道号从 1 开始（不是 0）。上限 32 是防畸形数据的护栏；某台设备实际有几路看 device.channels.length —— 通道数是设备能力，不是界面常量（ADSP1616 → 16，ADSP0808AEC → 8）。",
+      "indexMin": 1,
+      "maxCount": 32,
+      "defaultCount": 16,
+      "countSource": "device.channels.length"
+    },
+
+    "spectrum": {
+      "$comment": "频谱帧：64 个 bin、0~255。数值刻意与 Web Audio getByteFrequencyData() 同构 —— 设备推送与浏览器本地分析两个数据源因此可以互换，渲染器不用改。",
+      "bins": 64,
+      "min": 0,
+      "max": 255
+    },
+
+    "waveform": {
+      "$comment": "波形帧：256 点、0~255、128 为中轴（同 getByteTimeDomainData()）。",
+      "points": 256,
+      "min": 0,
+      "max": 255,
+      "center": 128
+    },
+
+    "cadence": {
+      "$comment": "推送节拍：meters（全设备总览，小帧）50ms 一批；spectrum/waveform（大帧）100ms 一档且只推被 focus 的设备。serverPingMs 是网关侧 ws 协议层 ping 巡检周期，对浏览器透明（浏览器自动回 pong）。",
+      "metersMs": 50,
+      "vizMs": 100,
+      "serverPingMs": 30000
+    },
+
+    "reliable": {
+      "$comment": "可靠指令：指令带 seq，设备回 ack(seq) 原样带回；超时重发**用同一个 seq**（所以设备端必须按 seq 幂等去重）；ok=false 是设备明确拒绝，不重发。applied 是 read-back（设备实际应用后的值），没有它前端就只能相信自己的乐观值。",
+      "ackTimeoutMs": 3000,
+      "maxRetries": 3,
+      "resendSameSeq": true,
+      "idempotentBySeq": true
+    },
+
+    "errorCodes": {
+      "$comment": "error/ack 里出现的业务错误码（name → code，语义见 errors.md）。新增码必须同时更新 errors.md。",
+      "deviceChannelNotFound": 1002,
+      "unknownMessageType": 4000
+    },
+
+    "closeCodes": {
+      "$comment": "关闭码：1000/1001/1008/1009 是 RFC6455 标准码，4001/4002 是本协议的业务码。1006 由浏览器生成（不是任何一端「发」出来的）。哪个码该重连由 client.reconnect.noRetryCloseCodes 决定。",
+      "normal": 1000,
+      "goingAway": 1001,
+      "abnormal": 1006,
+      "policyViolation": 1008,
+      "messageTooBig": 1009,
+      "deviceOffline": 4001,
+      "firmwareUpgrading": 4002
+    }
+  },
+
+  "client": {
+    "$comment": "【客户端本地策略】设备侧不感知这些参数，换一套实现也不影响协议。放这里是为了「一个文件看到全部可调项」，而不是因为它们属于契约。",
+
+    "heartbeat": {
+      "$comment": "应用层心跳（浏览器 WebSocket API 既发不出协议层 ping 帧、也监听不到 pong 帧，这是唯一手段）。链式 setTimeout，不是 setInterval（后台标签页节流时 setInterval 会攒着一起打）。连续 maxMissed 次超时才判死 —— 一次超时可能只是抖动。判死后主动 close(1000)：把「半开连接」伪装成一次正常断开，好让重连插件接管。",
+      "intervalMs": 15000,
+      "timeoutMs": 5000,
+      "maxMissed": 2,
+      "deadCloseCode": 1000
+    },
+
+    "reconnect": {
+      "$comment": "退避：delay = exp × (1 − jitterRatio + jitterRatio × rand)，exp = min(base × 2^attempt, max) —— 即 [exp/2, exp] 之间取随机。抖动是为了避免多客户端同时回来把网关打垮。noRetryCloseCodes 里的码表示「重连也没用」：策略违规 / 设备离线 / 固件升级中。",
+      "baseDelayMs": 1000,
+      "maxDelayMs": 30000,
+      "jitterRatio": 0.5,
+      "noRetryCloseCodes": ["policyViolation", "deviceOffline", "firmwareUpgrading"]
+    },
+
+    "outbox": {
+      "$comment": "断线入队、重连补发。limit 是队列上限（超出丢最旧）。volatileTypes 是「易失消息」——下一条会覆盖它，断线期间补发毫无意义，只会以每秒十几条的速率把队列塞满，所以直接不入队。",
+      "limit": 200,
+      "volatileTypes": ["setGainPreview"]
+    },
+
+    "backpressure": {
+      "$comment": "套接字发送缓冲高水位：超过就丢新消息（实时数据丢一条可容忍，堆积只会让延迟越滚越大）。可靠指令走 sendRaw，不受它影响。",
+      "highWaterBytes": 5242880
+    },
+
+    "preview": {
+      "$comment": "拖动预览：节流 ~16 条/秒（60ms）；松手后等权威值回来，confirmTimeoutMs 是兜底 —— state 丢了也不能让推子永远冻在乐观值上。",
+      "throttleMs": 60,
+      "confirmTimeoutMs": 2000
+    },
+
+    "observability": {
+      "$comment": "观测面板时间轴保留的最大事件数（环形缓冲）。",
+      "timelineMaxEvents": 200
+    }
+  },
+
+  "fixtures": {
+    "$comment": "【演练固定数据】Mock 网关用的机型表与设备数，不属于协议 —— 真实环境里这些来自设备档案/固件。列出来只为让演示可复现。",
+    "deviceModels": [
+      { "model": "ADSP1616", "channels": 16 },
+      { "model": "ADSP0808AEC", "channels": 8 }
+    ],
+    "mockDeviceCount": 10
+  }
+}

@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { WSCore } from '../core/ws-core';
 import { GATEWAY_HTTP, assembleFull } from '../assembly/profiles';
-import { LEVEL_NO_SIGNAL, cmd } from '../protocol';
+import { LEVEL_NO_SIGNAL, clientPolicy, cmd } from '../protocol';
 import type { AckPayload, Device } from '../protocol';
 import { registerRenderLoop } from '../viz/raf-loop';
 import type { MetricsSnapshot } from '../plugins/observability';
@@ -66,11 +66,11 @@ export const LOCAL_METER_ID = '__local__';
 /** 本地分析虚拟设备的通道数：与本地音频的声道结构对齐（L / R 两路计量） */
 export const LOCAL_METER_CHANNELS = 2;
 
-/** 拖动预览的发送节流（ms）：本地 UI 每帧跟随，网络最多 ~16 条/秒 */
-const PREVIEW_THROTTLE_MS = 60;
+/** 拖动预览的发送节流（ms）：本地 UI 每帧跟随，网络最多 ~16 条/秒（constants.json 的 client.preview） */
+const PREVIEW_THROTTLE_MS = clientPolicy.preview.throttleMs;
 
 /** 等权威值回来的兜底时长（ms）：state 丢了也不能让推子永远冻在乐观值上 */
-const GAIN_CONFIRM_TIMEOUT_MS = 2000;
+const GAIN_CONFIRM_TIMEOUT_MS = clientPolicy.preview.confirmTimeoutMs;
 
 export interface AudioUiState {
   fileName: string | null;

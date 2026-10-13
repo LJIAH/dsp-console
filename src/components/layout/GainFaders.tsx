@@ -1,10 +1,11 @@
 import { useRef } from 'react';
+import { GAIN_MAX, GAIN_MIN, GAIN_STEP } from '../../protocol';
 import type { Device } from '../../protocol';
 
-/** 增益范围与步进：与协议 ChannelSchema 的约定一致（-12 ~ +12 dB） */
-const MIN_GAIN = -12;
-const MAX_GAIN = 12;
-const STEP = 0.5;
+/** 增益范围与步进：与协议 ChannelSchema 同一份常量（protocol/constants.json） */
+const MIN_GAIN = GAIN_MIN;
+const MAX_GAIN = GAIN_MAX;
+const STEP = GAIN_STEP;
 
 interface Props {
   device: Device | null;

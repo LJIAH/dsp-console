@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsp-console.local/protocol/v1/messages.schema.json",
+  "title": "DSP Console 设备消息协议 v1",
+  "description": "双向信封的唯一机器可读定义。数值边界与 protocol/constants.json 一一对应（tests/contract.test.ts 会校验，改一处漏一处就红）；语义说明见 limits.md / errors.md / versioning.md。约定：模型类对象里**不允许多带字段**由发送方保证（网关出协议前显式挑字段，内部字段绝不外泄），Schema 这里不设 additionalProperties:false —— 收到未知字段要容忍，那是固件先上线、前端后跟上的现实路径（见 versioning.md）。",
+
+  "$defs": {
+    "Level": {
+      "type": "integer",
+      "minimum": -999,
+      "maximum": 0,
+      "description": "电平，dBFS×10 的定点整数。−999 为「无信号」哨兵（物理上不可能出现的值）。"
+    },
+
+    "Gain": {
+      "type": "number",
+      "minimum": -12,
+      "maximum": 12,
+      "description": "增益（控制量，可设定），单位 dB。与 Level（测量值，不可设定）是两个字段。"
+    },
+
+    "Channel": {
+      "type": "object",
+      "required": ["ch", "level", "muted", "gain"],
+      "properties": {
+        "ch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "description": "通道号，从 1 开始"
+        },
+        "level": { "$ref": "#/$defs/Level" },
+        "muted": { "type": "boolean" },
+        "gain": { "$ref": "#/$defs/Gain" }
+      }
+    },
+
+    "Device": {
+      "type": "object",
+      "required": ["deviceId", "name", "model", "online", "bootId", "fw", "channels"],
+      "properties": {
+        "deviceId": { "type": "string" },
+        "name": { "type": "string" },
+        "model": { "type": "string", "description": "型号，如 ADSP1616 / ADSP0808AEC" },
+        "online": { "type": "boolean" },
+        "bootId": {
+          "type": "string",
+          "description": "本次上电的 ID。值变化 = 设备重启过 → 序号归零、前端需拉全量"
+        },
+        "fw": { "type": "string" },
+        "channels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/Channel" },
+          "description": "数组长度就是这台设备的通道数（设备能力，不是界面常量）"
+        }
+      }
+    },
+
+    "SpectrumBins": {
+      "type": "array",
+      "minItems": 64,
+      "maxItems": 64,
+      "items": { "type": "integer", "minimum": 0, "maximum": 255 },
+      "description": "64 个 bin、0~255，与 Web Audio getByteFrequencyData() 同构"
+    },
+
+    "WaveformSamples": {
+      "type": "array",
+      "minItems": 256,
+      "maxItems": 256,
+      "items": { "type": "integer", "minimum": 0, "maximum": 255 },
+      "description": "256 点、0~255、128 为中轴，与 getByteTimeDomainData() 同构"
+    },
+
+    "Envelope": {
+      "type": "object",
+      "required": ["type", "ts"],
+      "properties": {
+        "type": { "type": "string" },
+        "ts": {
+          "type": "number",
+          "description": "发送方本地毫秒时间戳，只用于展示与排序，不做时钟对齐"
+        },
+        "seq": { "type": "integer" }
+      }
+    },
+
+    "snapshot": {
+      "description": "全量快照。连接建立后第一帧、以及重连对齐（REST /api/devices 与它同构）时下发。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "snapshot" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["devices"],
+          "properties": { "devices": { "type": "array", "items": { "$ref": "#/$defs/Device" } } }
+        }
+      }
+    },
+
+    "meters": {
+      "description": "高频电平批：一条消息带全部设备 × 各自通道（小帧，必推）。levels 只做「整数数组、长度合规」的形状校验，**不做值域校验** —— 高频通道上宁可画出一个怪值，也不能因为一条越界值的行李把整帧丢掉。",
+      "type": "object",
+      "required": ["type", "ts", "seq", "payload"],
+      "properties": {
+        "type": { "const": "meters" },
+        "ts": { "type": "number" },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "全局单调序号，跳号 = 有缺口（不做历史对齐，只做实时容错）"
+        },
+        "payload": {
+          "type": "object",
+          "required": ["devices"],
+          "properties": {
+            "devices": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["deviceId", "levels"],
+                "properties": {
+                  "deviceId": { "type": "string" },
+                  "levels": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "items": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "spectrum": {
+      "description": "频谱帧。大帧，只推给「聚焦了这台设备」的连接（focus 指令决定聚焦谁）。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "spectrum" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["deviceId", "bins"],
+          "properties": {
+            "deviceId": { "type": "string" },
+            "bins": { "$ref": "#/$defs/SpectrumBins" }
+          }
+        }
+      }
+    },
+
+    "waveform": {
+      "description": "波形帧。大帧，同 spectrum 的按需推送规则。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "waveform" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["deviceId", "samples"],
+          "properties": {
+            "deviceId": { "type": "string" },
+            "samples": { "$ref": "#/$defs/WaveformSamples" }
+          }
+        }
+      }
+    },
+
+    "state": {
+      "description": "单台设备的权威全量状态。指令生效后由设备/网关上推 —— 前端拿它交还乐观值（「指令下发成功 ≠ 设备已执行」）。预览指令**不推** state。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "state" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["device"],
+          "properties": { "device": { "$ref": "#/$defs/Device" } }
+        }
+      }
+    },
+
+    "ack": {
+      "description": "可靠指令回执。seq 必须原样带回才能配对。ok=false 是设备明确拒绝 → 不重发（重试无意义）；超时**不**回 ack 才会触发同 seq 重发。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "ack" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["seq", "ok"],
+          "properties": {
+            "seq": { "type": "integer" },
+            "ok": { "type": "boolean" },
+            "applied": {
+              "type": "number",
+              "description": "read-back：设备实际应用后的值（可选，但强烈建议带上）"
+            },
+            "code": { "type": "integer", "description": "ok=false 时的错误码，见 errors.md" },
+            "msg": { "type": "string" },
+            "retryable": {
+              "type": "boolean",
+              "description": "这个失败重发有没有意义（设备侧比客户端更清楚）"
+            }
+          }
+        }
+      }
+    },
+
+    "pong": {
+      "description": "心跳应答，echo 原样回带。它被心跳插件消费，不会流到业务层。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "pong" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["echo"],
+          "properties": { "echo": { "type": "number" } }
+        }
+      }
+    },
+
+    "error": {
+      "description": "协议层错误（如不认识的消息类型）。与 ack.ok=false 的区别：这个不对应某条指令，是「你发的这东西我没法处理」。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "error" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["code", "msg"],
+          "properties": {
+            "code": { "type": "integer" },
+            "msg": { "type": "string" },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      }
+    },
+
+    "ping": {
+      "description": "应用层心跳。浏览器 WebSocket API 发不出协议层 ping 帧，所以心跳只能做在应用层。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "ping" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["echo"],
+          "properties": { "echo": { "type": "number" } }
+        }
+      }
+    },
+
+    "subscribe": {
+      "description": "订阅设备集合（可靠指令：带 seq、等 ack）。重连后必须重发 —— 服务端不保留任何「关系」。",
+      "type": "object",
+      "required": ["type", "ts", "seq", "payload"],
+      "properties": {
+        "type": { "const": "subscribe" },
+        "ts": { "type": "number" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "payload": {
+          "type": "object",
+          "required": ["deviceIds"],
+          "properties": { "deviceIds": { "type": "array", "items": { "type": "string" } } }
+        }
+      }
+    },
+
+    "focus": {
+      "description": "聚焦设备：网关只给被聚焦的那台推频谱/波形。非可靠指令（丢了只是收不到高频帧，重发没意义）；重连后必须重发，否则静默停更。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "focus" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["deviceId"],
+          "properties": { "deviceId": { "type": ["string", "null"] } }
+        }
+      }
+    },
+
+    "setMuted": {
+      "description": "静音设定（可靠指令：seq + ack + read-back）。",
+      "type": "object",
+      "required": ["type", "ts", "seq", "payload"],
+      "properties": {
+        "type": { "const": "setMuted" },
+        "ts": { "type": "number" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "payload": {
+          "type": "object",
+          "required": ["deviceId", "ch", "muted"],
+          "properties": {
+            "deviceId": { "type": "string" },
+            "ch": { "type": "integer", "minimum": 1, "maximum": 32 },
+            "muted": { "type": "boolean" }
+          }
+        }
+      }
+    },
+
+    "setLevel": {
+      "description": "电平设定。注意它设的是 level（测量值）—— 真实设备上这个语义通常是「测试信号/校准用」，常规控制量请用 setGain。",
+      "type": "object",
+      "required": ["type", "ts", "seq", "payload"],
+      "properties": {
+        "type": { "const": "setLevel" },
+        "ts": { "type": "number" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "payload": {
+          "type": "object",
+          "required": ["deviceId", "ch", "level"],
+          "properties": {
+            "deviceId": { "type": "string" },
+            "ch": { "type": "integer", "minimum": 1, "maximum": 32 },
+            "level": { "type": "integer", "minimum": -600, "maximum": 0 }
+          }
+        }
+      }
+    },
+
+    "setGain": {
+      "description": "增益定值（可靠指令）：松手那一刻发。设备端按 seq 幂等去重，重复到达也要补回 ack。",
+      "type": "object",
+      "required": ["type", "ts", "seq", "payload"],
+      "properties": {
+        "type": { "const": "setGain" },
+        "ts": { "type": "number" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "payload": {
+          "type": "object",
+          "required": ["deviceId", "ch", "gain"],
+          "properties": {
+            "deviceId": { "type": "string" },
+            "ch": { "type": "integer", "minimum": 1, "maximum": 32 },
+            "gain": { "$ref": "#/$defs/Gain" }
+          }
+        }
+      }
+    },
+
+    "setGainPreview": {
+      "description": "增益预览（可丢指令）：拖动过程中 ~16 条/秒，**不带 seq、不回 ack、不推 state**。带 seq 会让拖动 1 秒产生几十条在途指令；推 state 会让它和本地乐观值互相打架。丢了无所谓——下一条覆盖它。",
+      "type": "object",
+      "required": ["type", "ts", "payload"],
+      "properties": {
+        "type": { "const": "setGainPreview" },
+        "ts": { "type": "number" },
+        "payload": {
+          "type": "object",
+          "required": ["deviceId", "ch", "gain"],
+          "properties": {
+            "deviceId": { "type": "string" },
+            "ch": { "type": "integer", "minimum": 1, "maximum": 32 },
+            "gain": { "$ref": "#/$defs/Gain" }
+          }
+        }
+      }
+    },
+
+    "ServerMessage": {
+      "title": "服务端 → 浏览器",
+      "oneOf": [
+        { "$ref": "#/$defs/snapshot" },
+        { "$ref": "#/$defs/meters" },
+        { "$ref": "#/$defs/spectrum" },
+        { "$ref": "#/$defs/waveform" },
+        { "$ref": "#/$defs/state" },
+        { "$ref": "#/$defs/ack" },
+        { "$ref": "#/$defs/pong" },
+        { "$ref": "#/$defs/error" }
+      ]
+    },
+
+    "ClientMessage": {
+      "title": "浏览器 → 服务端",
+      "oneOf": [
+        { "$ref": "#/$defs/ping" },
+        { "$ref": "#/$defs/subscribe" },
+        { "$ref": "#/$defs/focus" },
+        { "$ref": "#/$defs/setMuted" },
+        { "$ref": "#/$defs/setLevel" },
+        { "$ref": "#/$defs/setGain" },
+        { "$ref": "#/$defs/setGainPreview" }
+      ]
+    }
+  },
+
+  "oneOf": [{ "$ref": "#/$defs/ServerMessage" }, { "$ref": "#/$defs/ClientMessage" }]
+}
