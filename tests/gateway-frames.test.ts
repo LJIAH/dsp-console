@@ -11,6 +11,7 @@ import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { WebSocket as WsClient } from 'ws';
 import contract from '../protocol/constants.json';
 import schema from '../protocol/messages.schema.json';
 import { parseServerMessage } from '../src/protocol';
@@ -142,5 +143,55 @@ describe('网关实发帧（真进程）', () => {
     };
     const counts = payload.payload.devices.map((d) => d.levels.length);
     expect(counts.every((n) => n === 16 || n === 8)).toBe(true);
+  });
+});
+
+// ── Origin 校验：这条曾把线上挡在门外（白名单只写 localhost，域名访问一律 403） ──
+/**
+ * 用 `ws` 客户端手动带 Origin / Host —— 浏览器的 WebSocket 不允许自定义头，
+ * 只有这里能造出"跨站页面盗连"的现场。
+ */
+function tryConnect(
+  headers: Record<string, string>,
+): Promise<{ opened: boolean; status?: number }> {
+  return new Promise((resolve) => {
+    const client = new WsClient(`ws://127.0.0.1:${PORT}/ws`, { headers });
+    const done = (result: { opened: boolean; status?: number }) => {
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      client.terminate();
+      done({ opened: false });
+    }, 2_000);
+    client.on('open', () => {
+      client.close();
+      done({ opened: true });
+    });
+    client.on('unexpected-response', (_req, res) =>
+      done({ opened: false, status: res.statusCode }),
+    );
+    client.on('error', () => done({ opened: false }));
+  });
+}
+
+describe('Origin 校验（防 CSWSH，但别把自己人挡在门外）', () => {
+  it('同源放行：Origin 的 host 与请求 Host 一致（生产就是这条）', async () => {
+    const result = await tryConnect({ Origin: 'https://dsp.kevy.top', Host: 'dsp.kevy.top' });
+    expect(result.opened).toBe(true);
+  });
+
+  it('开发放行：localhost / 127.0.0.1（页面 5090、网关 8080）', async () => {
+    expect((await tryConnect({ Origin: 'http://localhost:5090' })).opened).toBe(true);
+  });
+
+  it('不带 Origin 也放行（curl / 自写测试工具不是浏览器，不在防护范围）', async () => {
+    expect((await tryConnect({ Host: 'dsp.kevy.top' })).opened).toBe(true);
+  });
+
+  it('跨站页面的盗连被 403 挡掉', async () => {
+    const result = await tryConnect({ Origin: 'https://evil.example', Host: 'dsp.kevy.top' });
+    expect(result.opened).toBe(false);
+    expect(result.status).toBe(403);
   });
 });

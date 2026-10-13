@@ -50,7 +50,34 @@ const WAVEFORM_CENTER = WIRE.waveform.center;
 const VIZ_INTERVAL_MS = WIRE.cadence.vizMs;
 /** 服务端侧协议层心跳巡检（ws ping，浏览器会自动回 pong，对前端透明） */
 const SERVER_PING_MS = WIRE.cadence.serverPingMs;
-const ALLOWED_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+/**
+ * Origin 校验：防的是"浏览器里的恶意页面偷偷连上来"（CSWSH），不是 curl —— 后者要靠 token。
+ *
+ * ⚠️ 这里**不能**写死 localhost：生产是 `https://dsp.kevy.top` 同源访问，
+ * 写死就等于线上第一次握手就被 403 挡掉（曾是真实故障：本地全绿、上线连不上）。
+ * 规则三条，开箱即用、不用配环境变量：
+ *   ① 同源：Origin 的 host 与请求的 Host 一致（生产形态，nginx 转发时带 `Host $host`）
+ *   ② 开发：localhost / 127.0.0.1 / ::1（页面在 5090、网关在 8080 那种）
+ *   ③ 例外：ALLOWED_ORIGINS=https://a.com,https://b.com（真要跨域部署时才用）
+ */
+const EXTRA_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+function isAllowedOrigin(origin, hostHeader) {
+  if (!origin) return true; // 非浏览器客户端（curl / 自写测试工具）
+  if (EXTRA_ORIGINS.includes(origin)) return true;
+  try {
+    const parsed = new URL(origin);
+    if (LOOPBACK_HOSTS.has(parsed.hostname)) return true;
+    return parsed.host === hostHeader; // 同源
+  } catch {
+    return false;
+  }
+}
 
 /**
  * 出站信封（信封四要素在实现里齐的那一天就是现在）：type / ts / seq / version。
@@ -174,11 +201,13 @@ const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
   const origin = req.headers.origin;
-  // Origin 校验：只防"浏览器里的恶意页面"，不防 curl/自写客户端（那要靠 token）
-  if (origin && !ALLOWED_ORIGIN.test(origin)) {
+  if (!isAllowedOrigin(origin, req.headers.host)) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     socket.destroy();
-    log(`拒绝 upgrade：非法 Origin ${origin}`);
+    log(
+      `拒绝 upgrade：Origin ${origin} 与 Host ${req.headers.host} 不同源` +
+        `（跨域部署请设 ALLOWED_ORIGINS=${origin}）`,
+    );
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
