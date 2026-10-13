@@ -38,6 +38,9 @@
 装配方案（profile）可整体替换：`profiles.full` 与 `profiles.legacyFirmware`
 （后者不装 heartbeat —— 老固件没有应用层 pong，半开连接永远发现不了）。
 
+插件体系之外还有一层「不属于任何一端、但两端都必须遵守」的东西：**协议契约**（`protocol/`，见第八节）——
+插件管"这条连接怎么活"，契约管"两端说的话是不是同一句"。
+
 ---
 
 ## 二、快速开始
@@ -51,6 +54,9 @@ pnpm start
 # 或分开起
 pnpm server   # Mock 设备网关（Express + ws）
 pnpm dev      # 前端（Vite）
+
+# 单测 + 契约测试（含「起一个真网关、收它实发的帧再校验」那一环）
+pnpm test
 ```
 
 打开 http://localhost:5173
@@ -62,14 +68,14 @@ pnpm dev      # 前端（Vite）
 
 ## 三、故障注入台（右下角）
 
-| 按钮            | 注入什么                    | 应该看到什么                                                          |
-| --------------- | --------------------------- | --------------------------------------------------------------------- |
-| 优雅断开 (1001) | 服务端发关闭帧              | onclose → 退避重连（倒计时 1s→2s→4s…封顶 30s + 抖动）                 |
-| 半开连接        | `ws.terminate()` 不发关闭帧 | readyState 停在 OPEN；心跳连续超时 → 判死 → 主动 `close(1000)` → 重连 |
-| 脏数据          | 推送非 JSON 帧              | 内核丢弃并计入 `parseErrors`（连接不受影响）                          |
-| 结构非法        | 合法 JSON、缺字段           | 协议插件拦下，报 `protocol:invalid`                                   |
-| 指令不回 ack    | 网关吞掉指令                | 3s 超时 → 重发 ×3 → `command:failed`                                  |
-| 恢复正常        | 关闭注入                    | —                                                                     |
+| 按钮            | 注入什么                    | 应该看到什么                                                                                     |
+| --------------- | --------------------------- | ------------------------------------------------------------------------------------------------ |
+| 优雅断开 (1001) | 服务端发关闭帧              | onclose → 退避重连（指数上限 1s→2s→4s…封顶 30s；实际等待带 50% 抖动，所以是 0.5~1s、1~2s… 地涨） |
+| 半开连接        | `ws.terminate()` 不发关闭帧 | readyState 停在 OPEN；心跳连续 2 次超时 → 判死 → 主动 `close(1000)` → 重连                       |
+| 脏数据          | 推送非 JSON 帧              | 内核丢弃并计入 `parseErrors`（连接不受影响）                                                     |
+| 结构非法        | 合法 JSON、缺字段           | 协议插件拦下，报 `protocol:invalid`                                                              |
+| 指令不回 ack    | 网关吞掉指令                | 3s 超时 → 用同一个 seq 重发 ×3 → `command:failed`（乐观值回滚）                                  |
+| 恢复正常        | 关闭注入                    | —                                                                                                |
 
 顶栏还有一对刻意做出来的对照：**主动断开**（`manuallyClosed`，不重连）vs **服务端踢**（必须重连）。
 
@@ -206,12 +212,42 @@ pointerdown handler —— 推子彻底没反应，异常还会冒到 React 错�
 
 ---
 
-## 八、目录结构
+## 八、协议契约：一份语言无关的契约 + 契约测试
+
+前端 TS、Mock 网关 Node、真实设备侧 C —— 「同一个东西」不能是三份代码里的三组常量。
+`protocol/` 就是那份语言无关的契约：
+
+```
+protocol/
+  constants.json         机器可读常量（数值的唯一来源，两端 import）
+  messages.schema.json   双向信封的 JSON Schema（结构与边界）
+  limits.md              单位与边界表 + 为什么这么定（−999 哨兵、dBFS×10、通道号从 1 起）
+  errors.md              错误码 / 关闭码 + 前端拿到它该干什么
+  versioning.md          版本与兼容（只增不删 / 适配层 / bootId）
+```
+
+三件事是这一层的重点：
+
+1. **数值只有一处**：电平的 `-600 ~ 0` 与 `-999` 哨兵、频谱 64 bin / 波形 256 点、通道号从 1 开始、
+   ack 3s × 3 次 —— 全写在 `constants.json`，`src/protocol.ts` 与 `server/index.mjs` 都 import 它。
+   之前是「两端各写一份 + 注释提醒必须一致」：那种一致性靠人盯，迟早会漂。
+2. **信封四要素在实现里齐了**：`type / ts / seq / version`。`version` 每帧带、缺省视为 1 ——
+   滚动升级期同一网段会同时存在两代固件，逐帧判断才能「新前端读得了旧固件、旧前端不崩在新固件上」。
+3. **契约测试让它不是文档**（`pnpm test`）：Schema 与 Zod 的消息类型集合一致、Schema 的每个边界等于
+   `constants.json` 的值、同一批样例帧在两边接受/拒绝结论一致、**起一个真网关收它实际发出的帧**再各验一遍。
+   文档会过期，测试不会。
+
+配套的两条解析纪律：**解析边界宽容**（未知字段忽略、新增字段 `optional`、v2 的帧也按 v1 尽力解析），
+**使用前兜底**（哨兵翻译成 `null`、缺值给默认值）—— 而「严格」只出现在发送方（出协议前显式挑字段，内部字段不外泄）。
+
+---
+
+## 九、目录结构
 
 ```
 src/
   core/ws-core.ts        内核：插件协议 + 两条拦截链 + 故障隔离 + 观测盲区补丁
-  plugins/                ①~⑩ 十个插件（每个只做一件事）
+  plugins/                ①~⑩ 十个插件（backoff.ts 是被单测钉住的退避纯函数）
   assembly/profiles.ts    装配表：顺序契约 + 两套 profile + 类型声明合并
   react/useConsole.ts     容器：单例 / 值-事件双通道 / 高频旁路 / 数据源切换
   components/
@@ -222,16 +258,19 @@ src/
     VizCanvas.tsx         通用画布宿主（DPR + ResizeObserver + 全局 rAF）
   viz/                    可视化管线：types / raf-loop / store / renderers / sources
   lib/format.ts           时间与时长格式化
-  protocol.ts             消息类型 + Zod 校验 + 单位边界（dB×10 定点、-999 哨兵）
+  protocol.ts             运行时入口：从 protocol/constants.json 取数 + Zod 校验 + 信封构造
+protocol/                 语言无关的契约目录（见第八节）
 server/index.mjs          Mock 网关（Express + ws noServer + chaos API + 数据模拟）
+tests/                    单测 + 契约测试（vitest；含一个起真网关的用例）
 ```
 
 ---
 
-## 九、还没做的（按优先级）
+## 十、还没做的（按优先级）
 
-1. **协议契约目录** `protocol/`（JSON Schema + limits.md + 边界表，与网关共用一份）
-2. **单元测试**：backoff 纯函数 / 状态机迁移 / MockWebSocket + fake timers 验退避
-3. 心跳 RTT 时序图、背压演示、超大消息 `close(1009)`
-4. 多标签页选主（Web Locks + BroadcastChannel）
-5. 三端适配收尾（44px 触控 / `100dvh` / 断点重排）
+1. 心跳 RTT 时序图、背压演示、超大消息 `close(1009)`
+   （顺带把 1009 加进「不重连」名单：重连后发出同样的超长消息只会再撞一次）
+2. 多标签页选主（Web Locks + BroadcastChannel）
+3. 三端适配收尾（44px 触控 / `100dvh` / 断点重排）
+4. 能力协商帧：连上后由设备发一次能力集（支持哪些消息、通道上限、固件版本），前端据此选装插件
+   —— 目前通道数是从 `snapshot` 的 `channels` 长度倒推的，够用但不够显式
