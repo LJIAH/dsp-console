@@ -12,7 +12,10 @@
  *
  * 运行：pnpm server
  */
+import { existsSync } from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import contract from '../protocol/constants.json' with { type: 'json' };
@@ -425,6 +428,40 @@ setInterval(() => {
   }
 }, SERVER_PING_MS);
 
+// ── 静态托管：生产形态是「一个端口、两种流量」 ──────────────────
+/**
+ * 为什么让网关顺手发前端：**同源**。
+ *   同源 → 不用配 CORS、不用两张证书、前端产物里也不必写死网关地址
+ *   （`wss://` 直接从 `location` 推导，见 src/assembly/profiles.ts）。
+ * 开发时是两个端口（Vite 5090 + 网关 8080），生产是同一个端口：
+ * HTTP 请求走 Express，`Upgrade` 请求走 handleUpgrade —— 这对浏览器是透明的。
+ *
+ * 没构建过（没有 dist/）时整段跳过，`pnpm server` 单独起也不会报错。
+ */
+const DIST_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
+
+/** 健康检查：给负载均衡/平台探活用，也方便部署后先 `curl /healthz` 定位问题 */
+app.get('/healthz', (_req, res) =>
+  res.json({
+    ok: true,
+    uptime: Math.round(process.uptime()),
+    clients: wss.clients.size,
+    devices: devices.size,
+  }),
+);
+
+if (existsSync(path.join(DIST_DIR, 'index.html'))) {
+  app.use(express.static(DIST_DIR, { index: false }));
+  // SPA 回退：/ 与任意深链 → index.html；但 /api/* 保持 404（接口拼错不该被吞成一个页面）
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
+    return res.sendFile(path.join(DIST_DIR, 'index.html'));
+  });
+  log(`静态站点    ${DIST_DIR}（已托管：前后端同源，前端请用这个地址访问）`);
+} else {
+  log('静态站点    未构建（没有 dist/）—— 本进程只提供 /api 与 /ws');
+}
+
 server.listen(PORT, () => {
   log(`WebSocket   ws://localhost:${PORT}/ws`);
   log(`REST 快照   http://localhost:${PORT}/api/devices`);
@@ -449,7 +486,17 @@ server.on('error', (err) => {
   throw err;
 });
 
-process.on('SIGINT', () => {
-  log('退出');
-  process.exit(0);
-});
+/**
+ * 退出：systemd / pm2 重启时收到的是 SIGTERM，Ctrl+C 是 SIGINT —— 两种都要能干净地关。
+ * WebSocket 是长连接，`server.close()` 自己等不到它们，所以先 terminate 再关。
+ */
+const shutdown = (signal) => {
+  log(`收到 ${signal}，关闭中…`);
+  for (const client of wss.clients) client.terminate();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 1_000).unref(); // 兜底：1s 内没关干净也退
+};
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => shutdown(signal));
+}

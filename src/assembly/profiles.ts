@@ -36,8 +36,22 @@ import { NO_RETRY_CLOSE_CODES, clientPolicy, heartbeatPolicy, wirePolicy } from 
 import type { AckPayload, ClientMessage, Device } from '../protocol';
 import type { MetricsSnapshot } from '../plugins/observability';
 
-export const GATEWAY_WS = import.meta.env.VITE_GATEWAY_WS ?? 'ws://localhost:8080/ws';
-export const GATEWAY_HTTP = import.meta.env.VITE_GATEWAY_HTTP ?? 'http://localhost:8080';
+/**
+ * 网关地址：默认**同源**（生产形态 —— 网关顺手托管 dist，一个域名一个端口）。
+ *   同源时 `wss://` 能从 `location` 推导出来，于是产物里**没有任何硬编码地址**：
+ *   换域名/换机器都不用重新构建，也就没机会犯「构建时忘了改 env、上线连不上」。
+ *   页面是 https 就自动 `wss://`（否则浏览器按混合内容直接拦）。
+ * 本机开发是**两个**端口（页面 5090、网关 8080），推导不出来 ——
+ * 由 `.env.development` 显式指路（见该文件注释）。
+ *
+ * 注：本模块是浏览器侧代码（依赖 `location` 与 `import.meta.env`），
+ * 与这个应用「纯 SPA、没有 SSR」的定位一致。
+ */
+const SAME_ORIGIN_HTTP = location.origin;
+const SAME_ORIGIN_WS = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
+
+export const GATEWAY_WS = import.meta.env.VITE_GATEWAY_WS ?? SAME_ORIGIN_WS;
+export const GATEWAY_HTTP = import.meta.env.VITE_GATEWAY_HTTP ?? SAME_ORIGIN_HTTP;
 
 export interface ReconnectInfo {
   attempt: number;
