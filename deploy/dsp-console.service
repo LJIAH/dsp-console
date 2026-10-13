@@ -1,0 +1,28 @@
+# dsp-console：Mock 设备网关 + 前端静态站点（一个进程、一个端口）
+#
+# ⚠️ 一般**不需要**手动装这个文件：`deploy/deploy.sh` 会按实际路径（Node 在哪、代码在哪、
+#    端口多少）生成一份并 enable + restart。这个文件是「不想跑脚本、要手写一遍」时的参照。
+#
+# 手动安装：
+#   sudo cp deploy/dsp-console.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now dsp-console
+#   journalctl -u dsp-console -f
+#
+# 注意 ExecStart 的 node 路径用 `which node` 查（宝塔装的一般在
+# /www/server/nodejs/vXX.Y.Z/bin/node；nvm 装的是 /root/.nvm/versions/node/vXX/bin/node）。
+[Unit]
+Description=dsp-console（Mock 设备网关 + 前端静态站点）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/www/wwwroot/dsp.kevy.top
+ExecStart=/usr/bin/node server/index.mjs
+Environment=NODE_ENV=production
+Environment=PORT=5090
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

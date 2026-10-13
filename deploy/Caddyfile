@@ -1,0 +1,15 @@
+# Caddy 反代（推荐）：自动申请并续期 Let's Encrypt 证书，默认转发 WebSocket 的 Upgrade 头
+#
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#
+# 前提：
+#   1. 域名 A 记录已指向本机公网 IP（dsp.kevy.top → 服务器 IP）
+#   2. 安全组放行 80 与 443（80 用于证书签发与跳转）
+#   3. 网关已在 127.0.0.1:5090 上跑着（systemd，见 dsp-console.service）
+#
+# 不需要显式写 ws 规则：Caddy 的 reverse_proxy 会把 Upgrade 请求原样转给后端。
+
+dsp.kevy.top {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:5090
+}

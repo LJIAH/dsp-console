@@ -1,0 +1,3 @@
+# 部署脚本不是 prettier 支持的语言（shell / Caddyfile / nginx / systemd unit）：
+# 与其让 --write 在提交时对它们报 "No parser could be inferred"，不如显式排除。
+deploy/
