@@ -15,32 +15,51 @@
 import http from 'node:http';
 import express from 'express';
 import { WebSocketServer } from 'ws';
+import contract from '../protocol/constants.json' with { type: 'json' };
+
+/**
+ * 数值全部来自 `protocol/constants.json` —— 与前端 `src/protocol.ts` 读的是**同一份**。
+ * 以前是两端各写一份、靠注释提醒"必须一致"；现在是单一份来源 + 契约测试兜底
+ * （tests/contract.test.ts 会校验 constants ↔ JSON Schema ↔ Zod 三方一致）。
+ */
+const WIRE = contract.wire;
+const VERSION = contract.protocolVersion;
 
 const PORT = Number(process.env.PORT ?? 8080);
-const DEVICE_COUNT = 10;
+const DEVICE_COUNT = contract.fixtures.mockDeviceCount;
 /**
  * 型号 → 通道数（真实产品线：ADSP1616 = 16 进 16 出，ADSP0808AEC = 8 进 8 出）。
  * 通道数是**设备能力**，不是界面常量 —— 前端的列数跟着 device.channels 走。
  */
-const MODELS = [
-  { model: 'ADSP1616', channels: 16 },
-  { model: 'ADSP0808AEC', channels: 8 },
-];
-const LEVEL_NO_SIGNAL = -999;
+const MODELS = contract.fixtures.deviceModels;
+const LEVEL_NO_SIGNAL = WIRE.level.noSignal;
 /** 电平推送频率：20Hz 批量（协议约定 10~20Hz，UI 只看得到 20~30fps） */
-const METER_INTERVAL_MS = 50;
+const METER_INTERVAL_MS = WIRE.cadence.metersMs;
 /**
- * 频谱 / 波形规格 —— ⚠️ 必须与 src/protocol.ts 里的同名常量一致（契约的两端）。
- * 数值刻意与 Web Audio 的字节数组同构（0~255；波形 128 为中轴），
- * 方便以后接"浏览器本地分析"数据源，渲染器不用改。
+ * 频谱 / 波形规格：与 Web Audio 的字节数组同构（0~255；波形中轴 128），
+ * 这样"设备推送"与"浏览器本地分析"两个数据源可以互换，渲染器不用改。
  */
-const SPECTRUM_BINS = 64;
-const WAVEFORM_POINTS = 256;
+const SPECTRUM_BINS = WIRE.spectrum.bins;
+const SPECTRUM_MAX = WIRE.spectrum.max;
+const WAVEFORM_POINTS = WIRE.waveform.points;
+const WAVEFORM_CENTER = WIRE.waveform.center;
 /** 频谱/波形推送间隔：10Hz —— 大帧比电平慢一档，省链路 */
-const VIZ_INTERVAL_MS = 100;
+const VIZ_INTERVAL_MS = WIRE.cadence.vizMs;
 /** 服务端侧协议层心跳巡检（ws ping，浏览器会自动回 pong，对前端透明） */
-const SERVER_PING_MS = 30_000;
+const SERVER_PING_MS = WIRE.cadence.serverPingMs;
 const ALLOWED_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+/**
+ * 出站信封（信封四要素在实现里齐的那一天就是现在）：type / ts / seq / version。
+ * seq 只出现在 meters 与 ack 上，所以它是可选的 extra。
+ */
+const frame = (type, payload, extra = {}) => ({
+  version: VERSION,
+  type,
+  ts: Date.now(),
+  ...extra,
+  payload,
+});
 
 const log = (...args) => console.log('[gateway]', ...args);
 
@@ -71,8 +90,11 @@ for (let i = 1; i <= DEVICE_COUNT; i += 1) {
   });
 }
 
-/** 增益边界：-12 ~ +12 dB、0.5 步进（与协议 ChannelSchema 的约定一致） */
-const clampGain = (v) => Math.max(-12, Math.min(12, Math.round((Number(v) || 0) * 2) / 2));
+/** 增益边界：-12 ~ +12 dB、0.5 步进 —— 与前端 ChannelSchema 同一份常量（protocol/constants.json） */
+const clampGain = (v) => {
+  const snapped = Math.round((Number(v) || 0) / WIRE.gain.step) * WIRE.gain.step;
+  return Math.max(WIRE.gain.min, Math.min(WIRE.gain.max, snapped));
+};
 
 /** 出协议前显式挑字段：内部字段（base）绝不外泄（协议字段白名单） */
 const cloneChannel = (c) => ({ ch: c.ch, level: c.level, muted: c.muted, gain: c.gain });
@@ -105,9 +127,10 @@ app.post('/api/chaos/:name', (req, res) => {
   switch (name) {
     case 'drop': {
       // 优雅断开：发关闭帧 → 浏览器 onclose(code=1001) → 前端退避重连
-      for (const c of clients) c.close(1001, 'server going away');
+      const code = WIRE.closeCodes.goingAway;
+      for (const c of clients) c.close(code, 'server going away');
       log(`chaos/drop：优雅断开 ${clients.length} 个连接`);
-      return res.send(`已优雅断开 ${clients.length} 个连接（code=1001）`);
+      return res.send(`已优雅断开 ${clients.length} 个连接（code=${code}）`);
     }
     case 'half-open': {
       // 直接销毁 socket，不发关闭帧 —— 本地最接近"拔网线"的复现手段。
@@ -163,7 +186,16 @@ function send(ws, msg) {
 }
 
 function ack(ws, seq, ok, extra = {}) {
-  send(ws, { type: 'ack', ts: Date.now(), payload: { seq, ok, ...extra } });
+  send(ws, frame('ack', { seq, ok, ...extra }));
+}
+
+/** 寻址失败的统一回应（同一份错误码/文案，不靠三处各写一遍） */
+function notFound(ws, seq) {
+  return ack(ws, seq, false, {
+    code: WIRE.errorCodes.deviceChannelNotFound,
+    msg: 'device/channel not found',
+    retryable: false,
+  });
 }
 
 // ── 连接生命周期 ───────────────────────────────────────────────
@@ -175,7 +207,7 @@ wss.on('connection', (ws) => {
     ws.isAlive = true;
   });
 
-  send(ws, { type: 'snapshot', ts: Date.now(), payload: { devices: snapshot() } });
+  send(ws, frame('snapshot', { devices: snapshot() }));
 
   ws.on('message', (raw) => {
     let msg;
@@ -200,7 +232,7 @@ function handleMessage(ws, msg) {
 
   switch (msg.type) {
     case 'ping':
-      send(ws, { type: 'pong', ts: Date.now(), payload: { echo: msg.payload?.echo ?? 0 } });
+      send(ws, frame('pong', { echo: msg.payload?.echo ?? 0 }));
       break;
 
     case 'subscribe':
@@ -217,30 +249,25 @@ function handleMessage(ws, msg) {
     case 'setMuted': {
       const d = devices.get(msg.payload?.deviceId);
       const ch = d?.channels[(msg.payload?.ch ?? 0) - 1];
-      if (!d || !ch) {
-        return ack(ws, msg.seq, false, {
-          code: 1002,
-          msg: 'device/channel not found',
-          retryable: false,
-        });
-      }
+      if (!d || !ch) return notFound(ws, msg.seq);
       ch.muted = Boolean(msg.payload.muted);
       if (ch.muted) ch.level = LEVEL_NO_SIGNAL;
       ack(ws, msg.seq, true, { applied: ch.muted ? 1 : 0 }); // read-back
-      send(ws, { type: 'state', ts: Date.now(), payload: { device: cloneDevice(d) } });
+      send(ws, frame('state', { device: cloneDevice(d) }));
       break;
     }
 
     case 'setLevel': {
       const d = devices.get(msg.payload?.deviceId);
       const ch = d?.channels[(msg.payload?.ch ?? 0) - 1];
-      if (!d || !ch) {
-        return ack(ws, msg.seq, false, { code: 1002, msg: 'device/channel not found' });
-      }
-      const clamped = Math.max(-600, Math.min(0, Math.round(Number(msg.payload.level) || 0)));
+      if (!d || !ch) return notFound(ws, msg.seq);
+      const clamped = Math.max(
+        WIRE.level.min,
+        Math.min(WIRE.level.max, Math.round(Number(msg.payload.level) || 0)),
+      );
       ch.level = clamped;
       ack(ws, msg.seq, true, { applied: clamped });
-      send(ws, { type: 'state', ts: Date.now(), payload: { device: cloneDevice(d) } });
+      send(ws, frame('state', { device: cloneDevice(d) }));
       break;
     }
 
@@ -248,16 +275,10 @@ function handleMessage(ws, msg) {
     case 'setGain': {
       const d = devices.get(msg.payload?.deviceId);
       const ch = d?.channels[(msg.payload?.ch ?? 0) - 1];
-      if (!d || !ch) {
-        return ack(ws, msg.seq, false, {
-          code: 1002,
-          msg: 'device/channel not found',
-          retryable: false,
-        });
-      }
+      if (!d || !ch) return notFound(ws, msg.seq);
       ch.gain = clampGain(msg.payload.gain);
       ack(ws, msg.seq, true, { applied: ch.gain });
-      send(ws, { type: 'state', ts: Date.now(), payload: { device: cloneDevice(d) } });
+      send(ws, frame('state', { device: cloneDevice(d) }));
       break;
     }
 
@@ -272,11 +293,14 @@ function handleMessage(ws, msg) {
     }
 
     default:
-      send(ws, {
-        type: 'error',
-        ts: Date.now(),
-        payload: { code: 4000, msg: `unknown message type: ${msg.type}`, retryable: false },
-      });
+      send(
+        ws,
+        frame('error', {
+          code: WIRE.errorCodes.unknownMessageType,
+          msg: `unknown message type: ${msg.type}`,
+          retryable: false,
+        }),
+      );
   }
 }
 
@@ -303,21 +327,19 @@ setInterval(() => {
       // 「增益」真的参与电平计算：+6dB 增益 → 电平抬 6dB。
       // 这是真实设备的反应，也是拖动推子时柱子会跟着动的演示点。
       c.level = Math.round(
-        Math.max(-600, Math.min(0, c.base + c.gain * 10 + (Math.random() - 0.5) * 14)),
+        Math.max(
+          WIRE.level.min,
+          Math.min(WIRE.level.max, c.base + c.gain * 10 + (Math.random() - 0.5) * 14),
+        ),
       );
     }
     batch.push({ deviceId: d.deviceId, levels: d.channels.map((c) => c.level) });
   }
 
-  const frame = JSON.stringify({
-    type: 'meters',
-    ts: Date.now(),
-    seq: metersSeq,
-    payload: { devices: batch },
-  });
+  const payload = JSON.stringify(frame('meters', { devices: batch }, { seq: metersSeq }));
 
   for (const c of wss.clients) {
-    if (c.readyState === c.OPEN) c.send(frame);
+    if (c.readyState === c.OPEN) c.send(payload);
   }
 }, METER_INTERVAL_MS);
 
@@ -333,16 +355,8 @@ setInterval(() => {
     if (!device) continue;
 
     const silent = device.channels.every((c) => c.muted);
-    send(client, {
-      type: 'spectrum',
-      ts: Date.now(),
-      payload: { deviceId, bins: makeSpectrum(deviceId, t, silent) },
-    });
-    send(client, {
-      type: 'waveform',
-      ts: Date.now(),
-      payload: { deviceId, samples: makeWaveform(deviceId, t, silent) },
-    });
+    send(client, frame('spectrum', { deviceId, bins: makeSpectrum(deviceId, t, silent) }));
+    send(client, frame('waveform', { deviceId, samples: makeWaveform(deviceId, t, silent) }));
   }
 }, VIZ_INTERVAL_MS);
 
@@ -369,7 +383,7 @@ function makeSpectrum(deviceId, t, silent) {
     const tilt = (1 - f) ** 1.5; // 低频高、高频低
     const wobble = 0.55 + 0.45 * Math.sin(t * 1.6 + f * 11 + seed);
     const noise = 0.85 + Math.random() * 0.15;
-    bins[i] = Math.round(255 * Math.min(1, tilt * wobble * noise * 1.25));
+    bins[i] = Math.round(SPECTRUM_MAX * Math.min(1, tilt * wobble * noise * 1.25));
   }
   return bins;
 }
@@ -385,7 +399,7 @@ function makeWaveform(deviceId, t, silent) {
   const phase = t * 6;
   for (let i = 0; i < WAVEFORM_POINTS; i += 1) {
     if (silent) {
-      out[i] = 128;
+      out[i] = WAVEFORM_CENTER;
       continue;
     }
     const x = (i / WAVEFORM_POINTS) * Math.PI * 2 * cycles;
@@ -393,7 +407,7 @@ function makeWaveform(deviceId, t, silent) {
       Math.sin(x + phase) * 0.62 +
       Math.sin(x * 2.3 + phase * 1.7) * 0.24 +
       Math.sin(x * 5.1 + phase * 0.7) * 0.1;
-    out[i] = Math.round(128 + Math.max(-1, Math.min(1, v)) * 110);
+    out[i] = Math.round(WAVEFORM_CENTER + Math.max(-1, Math.min(1, v)) * 110);
   }
   return out;
 }
@@ -414,7 +428,9 @@ setInterval(() => {
 server.listen(PORT, () => {
   log(`WebSocket   ws://localhost:${PORT}/ws`);
   log(`REST 快照   http://localhost:${PORT}/api/devices`);
-  log(`故障注入    POST http://localhost:${PORT}/api/chaos/{drop|half-open|dirty|invalid|no-ack|restore}`);
+  log(
+    `故障注入    POST http://localhost:${PORT}/api/chaos/{drop|half-open|dirty|invalid|no-ack|restore}`,
+  );
 });
 
 /**
