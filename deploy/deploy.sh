@@ -17,9 +17,11 @@
 #   DOMAIN       域名       默认 dsp.kevy.top（只用于打印提示）
 #   NO_SERVICE=1 只拉代码 + 构建，不碰 systemd（本机冒烟、或用宝塔「Node 项目」时）
 #
-# 脚本不管的三件事（属于面板/安全组，只做一次）：
+# 脚本不管的三件事（属于面板/安全组，只做一次；跑完它会打印具体怎么配）：
 #   ① 域名解析 + 宝塔里配好 HTTPS 证书
-#   ② 宝塔：网站 → 反向代理 → http://127.0.0.1:<PORT>（并确认含 WS 的三行头，脚本会打印）
+#   ② nginx 把 / 反代到 http://127.0.0.1:<PORT>（含 WebSocket 的三行头）
+#      宝塔有「反向代理」入口就用；没有（阿里云定制版等精简版）就贴站点「配置文件」里的
+#      `location ^~ /` —— 注意 `^~` 与 `Host $host` 两个都不能省，原因见脚本结尾的打印
 #   ③ 安全组放行 80/443；5090 只在同机反代，不必对外开放
 #
 # ⚠️ 代码目录 = 站点目录，所以**反向代理必须配好**：
@@ -182,20 +184,37 @@ cat <<EOF
   实时日志                journalctl -u $APP_NAME -f
   更新代码                重跑本脚本（拉取 → 构建 → 重启，一条龙）
 
-还要在宝塔里做一次（只有第一次需要）：
-  网站 → $DOMAIN → 反向代理 → 添加反向代理
-      代理名称  $APP_NAME
-      目标 URL  http://127.0.0.1:$PORT
-      发送域名  \$host
-  再打开该反代的「配置文件」，确认这三行在（WebSocket 全靠它们；
-  缺了就是"页面能打开、顶栏一直连不上"）：
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade \$http_upgrade;
-      proxy_set_header Connection "upgrade";
+接下来只剩 nginx 那一层：把 $DOMAIN 交给 $PORT（宝塔里做一次即可）
+
+  A. 站点设置里**有**「反向代理」：
+     添加 → 目标 URL http://127.0.0.1:$PORT、发送域名 \$host
+  B. **没有**（阿里云定制版等精简版：站点设置只有 域名管理/流量限制/伪静态/配置文件/
+     重定向/SSL/网站日志）：点站点「配置文件」，把下面这段贴进 server{} ——
+     原来若已有 location /，就整段替换（别并存两个）：
+
+      location ^~ / {
+          proxy_pass http://127.0.0.1:$PORT;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade \$http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_set_header Host \$host;      # ← Origin 校验靠它（网关只放行同源）
+          proxy_set_header X-Real-IP \$remote_addr;
+          proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+          proxy_read_timeout 3600s;
+          proxy_send_timeout 3600s;
+      }
+
+  ⚠️ 三个坑（都是真踩过的）：
+     · ^~ 不能省：nginx 里正则 location 优先级高于普通前缀，模板自带的
+       「location ~* \.(js|css)\$」会把 /assets/* 抢走 → 白屏（静态文件它去站点根目录找）
+     · Host \$host 不能省：网关只放行同源 Origin，缺它 → 403、顶栏一直连不上
+     · 「网站 → 伪静态」设成 默认/空，免得它再往里塞 rewrite
+
   安全组：放行 80/443 即可；$PORT 只在同机反代，不必对外开放。
 
-验证：
+验收：
   curl -s https://$DOMAIN/healthz     # → {"ok":true,...,"devices":10}
   浏览器打开 https://$DOMAIN          # 顶栏「已连接」，点两下故障注入台
+  journalctl -u $APP_NAME -f          # 刷新页面应看到「客户端已连接 → 推送快照」
 ══════════════════════════════════════════════════════════════════
 EOF
