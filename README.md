@@ -359,5 +359,8 @@ Nginx 手写配置见 `deploy/nginx.conf`。两条路都别省 `Upgrade`/`Connec
 - ⚠️ 不要在生产上跑 `pnpm dev`：Vite 开发服务器不是生产服务器，两个端口还会带来跨域与 wss 的麻烦。
 - 大陆节点的 80/443 需要 **ICP 备案**；没备案时先用 `http://<公网IP>:5090` 验功能（安全组放行 5090）。
 - 上线自测：`curl https://dsp.kevy.top/healthz` → 打开页面看顶栏「已连接」→ 按两下故障注入台。
+- 「页面能开、但顶栏一直连不上」只有三种成因，按顺序查：① 反代缺 `Upgrade`/`Connection` 三行头；
+  ② 网关日志里有 `拒绝 upgrade：… 不同源` → 反代没带 `Host $host`（Origin 校验是"同源放行"，
+  见 `server/index.mjs`）；③ 反代规则没生效（`/ws` 落到了静态目录）。
 - 未做的事（演示期已知）：`POST /api/chaos/*` 对公网开放，任何人都能让你的界面「假死」；
   网关是单进程内存状态，只能 1 副本、重启即重置。
