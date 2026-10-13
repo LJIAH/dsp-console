@@ -32,7 +32,7 @@ import { backpressurePlugin } from '../plugins/backpressure';
 import { sessionPlugin } from '../plugins/session';
 import { visibilityPlugin } from '../plugins/visibility';
 import { pubsubPlugin } from '../plugins/pubsub';
-import { heartbeatPolicy } from '../protocol';
+import { NO_RETRY_CLOSE_CODES, clientPolicy, heartbeatPolicy, wirePolicy } from '../protocol';
 import type { AckPayload, ClientMessage, Device } from '../protocol';
 import type { MetricsSnapshot } from '../plugins/observability';
 
@@ -93,33 +93,39 @@ export const profiles = {
     const client = new WSCore({ url: opts.url ?? GATEWAY_WS });
     client
       .use(reconnectPlugin(), {
-        baseDelay: 1_000,
-        maxDelay: 30_000,
-        noRetryCodes: opts.noRetryCodes ?? [1008, 4001, 4002],
+        baseDelay: clientPolicy.reconnect.baseDelayMs,
+        maxDelay: clientPolicy.reconnect.maxDelayMs,
+        noRetryCodes: opts.noRetryCodes ?? NO_RETRY_CLOSE_CODES,
         maxReconnectAttempts: opts.maxReconnectAttempts ?? Infinity,
       })
       .use(observabilityPlugin())
       .use(protocolPlugin())
       .use(heartbeatPlugin(), {
-        heartbeatInterval: opts.heartbeatInterval ?? 15_000,
-        heartbeatTimeout: opts.heartbeatTimeout ?? 5_000,
-        maxMissed: opts.maxMissed ?? 2,
+        heartbeatInterval: opts.heartbeatInterval ?? clientPolicy.heartbeat.intervalMs,
+        heartbeatTimeout: opts.heartbeatTimeout ?? clientPolicy.heartbeat.timeoutMs,
+        maxMissed: opts.maxMissed ?? clientPolicy.heartbeat.maxMissed,
         buildPing: heartbeatPolicy.buildPing,
         isPong: heartbeatPolicy.isPong,
       })
       .use(reliablePlugin(), {
-        ackTimeout: opts.ackTimeout ?? 3_000,
-        maxRetry: opts.maxRetry ?? 3,
+        ackTimeout: opts.ackTimeout ?? wirePolicy.reliable.ackTimeoutMs,
+        maxRetry: opts.maxRetry ?? wirePolicy.reliable.maxRetries,
       })
       .use(
         outboxPlugin({
-          // 拖动预览是「下一条覆盖它」的实时量：断线期间补发毫无意义，
-          // 却会以每秒十几条的速率把队列塞满。不发，也不入队。
-          isVolatile: (msg) => (msg as { type?: string } | null)?.type === 'setGainPreview',
+          // 易失消息由契约里的清单决定（`client.outbox.volatileTypes`）——
+          // 判据只有一条：这条消息过期后还有没有价值。拖动预览没有（下一条会覆盖它），
+          // 补发只会以每秒十几条的速率把队列塞满。
+          isVolatile: (msg) =>
+            clientPolicy.outbox.volatileTypes.includes(
+              (msg as { type?: string } | null)?.type ?? '',
+            ),
         }),
-        { outboxLimit: opts.outboxLimit ?? 200 },
+        { outboxLimit: opts.outboxLimit ?? clientPolicy.outbox.limit },
       )
-      .use(backpressurePlugin(), { highWater: opts.highWater ?? 5 * 1024 * 1024 })
+      .use(backpressurePlugin(), {
+        highWater: opts.highWater ?? clientPolicy.backpressure.highWaterBytes,
+      })
       .use(sessionPlugin(), { snapshotUrl: opts.snapshotUrl ?? `${GATEWAY_HTTP}/api/devices` })
       .use(visibilityPlugin())
       .use(pubsubPlugin());
@@ -134,10 +140,16 @@ export const profiles = {
   legacyFirmware(opts: AssemblyOptions = {}): WSCore {
     const client = new WSCore({ url: opts.url ?? GATEWAY_WS });
     client
-      .use(reconnectPlugin(), { baseDelay: 1_000, maxDelay: 30_000 })
+      .use(reconnectPlugin(), {
+        baseDelay: clientPolicy.reconnect.baseDelayMs,
+        maxDelay: clientPolicy.reconnect.maxDelayMs,
+      })
       .use(observabilityPlugin())
       .use(protocolPlugin())
-      .use(reliablePlugin(), { ackTimeout: 3_000, maxRetry: 3 })
+      .use(reliablePlugin(), {
+        ackTimeout: wirePolicy.reliable.ackTimeoutMs,
+        maxRetry: wirePolicy.reliable.maxRetries,
+      })
       .use(pubsubPlugin());
     return client;
   },

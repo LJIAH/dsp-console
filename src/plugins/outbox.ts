@@ -13,9 +13,10 @@
  *    同时把真正需要补发的消息（订阅、定值）挤出去 —— 所以支持 volatile 判定。
  */
 import type { Plugin } from '../core/ws-core';
+import { clientPolicy } from '../protocol';
 
 export interface OutboxOptions {
-  /** 队列上限（默认取 ctx.opts.outboxLimit，再退到 200），满了丢最旧 */
+  /** 队列上限（默认取 ctx.opts.outboxLimit，再退到 constants.json 的 client.outbox.limit），满了丢最旧 */
   limit?: number;
   /**
    * 易失判定：返回 true = 断线期间**直接丢弃**，不入队。
@@ -31,7 +32,7 @@ export function outboxPlugin(options: OutboxOptions = {}): Plugin {
     name: 'outbox',
     setup(ctx) {
       const queue: unknown[] = [];
-      const limit = () => options.limit ?? ctx.opts.outboxLimit ?? 200;
+      const limit = () => options.limit ?? ctx.opts.outboxLimit ?? clientPolicy.outbox.limit;
       const isVolatile = options.isVolatile ?? (() => false);
       let dropped = 0;
 

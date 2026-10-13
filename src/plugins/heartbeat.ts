@@ -15,6 +15,7 @@
  * 好让 onclose 触发、重连插件接管。code 是 1000 而不是 1006（这是自测点）。
  */
 import type { Plugin } from '../core/ws-core';
+import { clientPolicy } from '../protocol';
 
 export function heartbeatPlugin(): Plugin {
   return {
@@ -38,7 +39,7 @@ export function heartbeatPlugin(): Plugin {
           tickTimer = null;
           probe();
           if (ctx.isOpen()) scheduleTick();
-        }, ctx.opts.heartbeatInterval ?? 15_000);
+        }, ctx.opts.heartbeatInterval ?? clientPolicy.heartbeat.intervalMs);
       };
 
       const probe = () => {
@@ -55,12 +56,16 @@ export function heartbeatPlugin(): Plugin {
           pongTimer = null;
           missed += 1;
           ctx.emit('heartbeat:missed', { missed });
-          if (missed >= (ctx.opts.maxMissed ?? 2)) {
+          if (missed >= (ctx.opts.maxMissed ?? clientPolicy.heartbeat.maxMissed)) {
+            // ⚠️ 先取数再 stop()：stop() 会把 missed 清零，先 stop 再上报
+            // 会让面板显示"连续 0 次无 pong 判定假死"（自己抓到的 bug，见 tests/heartbeat.test.ts）
+            const missedCount = missed;
             stop();
-            ctx.emit('heartbeat:dead', { missed });
-            ctx.closeConnection(1000, 'heartbeat timeout');
+            ctx.emit('heartbeat:dead', { missed: missedCount });
+            // 主动关（不是 1006）：把"半开连接"伪装成一次正常断开，好让重连插件接管
+            ctx.closeConnection(clientPolicy.heartbeat.deadCloseCode, 'heartbeat timeout');
           }
-        }, ctx.opts.heartbeatTimeout ?? 5_000);
+        }, ctx.opts.heartbeatTimeout ?? clientPolicy.heartbeat.timeoutMs);
       };
 
       ctx.onOpen(() => {

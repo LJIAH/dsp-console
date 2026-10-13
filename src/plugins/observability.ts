@@ -13,6 +13,7 @@
  */
 import type { CoreState, Plugin } from '../core/ws-core';
 import { CoreEvents } from '../core/ws-core';
+import { clientPolicy } from '../protocol';
 
 export interface TimelineEvent {
   at: number;
@@ -45,7 +46,8 @@ export interface MetricsSnapshot {
   events: readonly TimelineEvent[];
 }
 
-const MAX_EVENTS = 200;
+/** 时间轴保留的事件数（环形缓冲）—— 参数在 constants.json 的 client.observability */
+const MAX_EVENTS = clientPolicy.observability.timelineMaxEvents;
 
 export function observabilityPlugin(): Plugin {
   return {

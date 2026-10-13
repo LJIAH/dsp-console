@@ -10,6 +10,7 @@
  *    outbox 永远收不到货 —— 这类顺序断言在 profiles.ts 里有注释说明。
  */
 import type { Plugin } from '../core/ws-core';
+import { clientPolicy } from '../protocol';
 
 export function backpressurePlugin(): Plugin {
   return {
@@ -20,7 +21,7 @@ export function backpressurePlugin(): Plugin {
           ctx.emit('backpressure:dropped', { reason: 'offline' });
           return; // 拦截：不调 next
         }
-        const highWater: number = ctx.opts.highWater ?? 5 * 1024 * 1024;
+        const highWater: number = ctx.opts.highWater ?? clientPolicy.backpressure.highWaterBytes;
         if (ctx.bufferedAmount() > highWater) {
           ctx.emit('backpressure:dropped', {
             reason: 'high-water',

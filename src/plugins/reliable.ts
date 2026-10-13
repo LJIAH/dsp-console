@@ -11,6 +11,7 @@
  * 是否回滚乐观更新（"指令下发成功 ≠ 设备已执行"）。
  */
 import type { Plugin } from '../core/ws-core';
+import { wirePolicy } from '../protocol';
 import type { AckPayload, ClientMessage } from '../protocol';
 
 interface PendingItem {
@@ -43,8 +44,8 @@ export function reliablePlugin(): Plugin {
        */
       const emitPending = () => ctx.emit('command:pending', { pending: pending.size });
 
-      const ackTimeout = () => ctx.opts.ackTimeout ?? 3_000;
-      const maxRetry = () => ctx.opts.maxRetry ?? 3;
+      const ackTimeout = () => ctx.opts.ackTimeout ?? wirePolicy.reliable.ackTimeoutMs;
+      const maxRetry = () => ctx.opts.maxRetry ?? wirePolicy.reliable.maxRetries;
 
       const send = (item: PendingItem) => {
         if (item.timer) clearTimeout(item.timer);
@@ -93,6 +94,12 @@ export function reliablePlugin(): Plugin {
       ctx.onTeardown(() => {
         for (const item of pending.values()) {
           if (item.timer) clearTimeout(item.timer);
+          /**
+           * ⚠️ 必须**结算**而不是只清空：`await sendCommand(...)` 的调用方（推子、静音键）
+           * 否则会永远挂在那里 —— 主动断开时也一样（用户点了"主动断开"，
+           * 那些指令就真的不会再发了，得让上层知道，而不是让它等到天荒地老）。
+           */
+          item.reject(new Error(`连接已断开，指令 seq=${item.seq} 未送达`));
         }
         pending.clear();
         emitPending();

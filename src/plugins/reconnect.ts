@@ -5,8 +5,12 @@
  * 后面的 reliable（重连重发）、session（快照对齐）都依赖这个值。
  *
  * 三要素：指数退避（1s→2s→4s…封顶 30s）+ 抖动（[50%,100%] 防惊群）+ code 过滤。
+ *
+ * 延迟的算法本体在 `./backoff.ts`（纯函数，单测钉住）；参数在 protocol/constants.json。
  */
 import type { Plugin } from '../core/ws-core';
+import { NO_RETRY_CLOSE_CODES, clientPolicy } from '../protocol';
+import { backoffDelay } from './backoff';
 
 export function reconnectPlugin(): Plugin {
   return {
@@ -32,7 +36,7 @@ export function reconnectPlugin(): Plugin {
         // 用户主动关闭 → 到此为止（这就是"主动关闭不重连"的落点）
         if (ctx.isManuallyClosed()) return;
 
-        const noRetry: number[] = ctx.opts.noRetryCodes ?? [1008, 4001, 4002];
+        const noRetry: number[] = ctx.opts.noRetryCodes ?? NO_RETRY_CLOSE_CODES;
         if (noRetry.includes(e.code)) {
           // 鉴权失败等：重试无意义。⚠️ 1000 不在名单里——
           // 心跳判死时我们用 close(1000) 主动断开，那是必须重连的
@@ -46,11 +50,11 @@ export function reconnectPlugin(): Plugin {
           return;
         }
 
-        const exp = Math.min(
-          (ctx.opts.baseDelay ?? 1_000) * 2 ** attempts,
-          ctx.opts.maxDelay ?? 30_000,
-        );
-        const delay = exp / 2 + Math.random() * (exp / 2); // 抖动
+        const delay = backoffDelay(attempts, {
+          baseDelayMs: ctx.opts.baseDelay ?? clientPolicy.reconnect.baseDelayMs,
+          maxDelayMs: ctx.opts.maxDelay ?? clientPolicy.reconnect.maxDelayMs,
+          jitterRatio: clientPolicy.reconnect.jitterRatio,
+        });
         attempts += 1;
         currentDelay = delay;
         nextRetryAt = Date.now() + delay;
