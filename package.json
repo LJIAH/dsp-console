@@ -9,7 +9,9 @@
     "server": "node server/index.mjs",
     "start": "concurrently -n gateway,web -c yellow,cyan --kill-others-on-fail \"pnpm server\" \"pnpm dev\"",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "express": "^5.2.1",
@@ -24,10 +26,12 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "ajv": "^8.20.0",
     "concurrently": "^10.0.5",
     "prettier": "^3.9.8",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vitest": "^5.0.3"
   }
 }
