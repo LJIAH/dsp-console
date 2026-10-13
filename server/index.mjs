@@ -452,9 +452,18 @@ app.get('/healthz', (_req, res) =>
 
 if (existsSync(path.join(DIST_DIR, 'index.html'))) {
   app.use(express.static(DIST_DIR, { index: false }));
-  // SPA 回退：/ 与任意深链 → index.html；但 /api/* 保持 404（接口拼错不该被吞成一个页面）
+  /**
+   * SPA 回退：/ 与任意深链 → index.html。
+   * 但两类路径**故意不兜**，保持真正的 404：
+   *   · `/api/*` —— 接口拼错不该被吞成一个 200 的页面
+   *   · 带扩展名的文件（`/assets/index-xxx.js`）—— 兜了就会「404 的 JS 被喂回 index.html」，
+   *     浏览器报 "Expected a JavaScript module script but the server responded with a
+   *     MIME type of text/html"，页面白屏，而且**看不出是谁的锅**（排查时最烦这种）
+   */
   app.use((req, res, next) => {
-    if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
+    if (req.method !== 'GET' || req.path.startsWith('/api') || /\.[a-z0-9]+$/i.test(req.path)) {
+      return next();
+    }
     return res.sendFile(path.join(DIST_DIR, 'index.html'));
   });
   log(`静态站点    ${DIST_DIR}（已托管：前后端同源，前端请用这个地址访问）`);
