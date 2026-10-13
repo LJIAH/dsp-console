@@ -25,6 +25,11 @@
 # ⚠️ 代码目录 = 站点目录，所以**反向代理必须配好**：
 #    配好之后 / 全部转给 Node（Node 只发 dist/，仓库源码不会外泄）；
 #    万一没配，nginx 会直接按站点根目录发文件（宝塔默认拦了 .git/.env，但 src/、server/ 是发得出去的）。
+#
+# 脚本内部的 git 调用都带 `-c safe.directory=<APP_DIR>`（站点目录属主是 www、脚本是 root，
+# 否则 git 会报 "detected dubious ownership"）。你自己想在这个目录里敲 git（status/pull）时，
+# 要么每次加 `-c safe.directory=...`，要么一次性放开（你自己的机器，自己决定）：
+#   git config --global --add safe.directory /www/wwwroot/dsp.kevy.top
 # ══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -102,7 +107,9 @@ fi
 # 部署目录就该跟着仓库走：受版本控制的文件会被覆盖成本次的提交（这正是"部署"的语义）。
 # 未跟踪的既有文件（宝塔的 index.html、dist/、node_modules/）不受影响。
 "${gitc[@]}" reset --hard FETCH_HEAD
-ok "当前版本 $(git -C "$APP_DIR" log -1 --format='%h %s')"
+# ⚠️ 这里的 git 调用也必须走 ${gitc[@]}（带 safe.directory）—— 裸 git -C 会报
+#    "detected dubious ownership"（站点目录属主是 www，脚本以 root 跑）
+ok "当前版本 $("${gitc[@]}" log -1 --format='%h %s')"
 
 # ── ③ 安装依赖 + 构建 ─────────────────────────────────────────────
 say "③ 安装依赖 + 构建（产物 dist/ 由网关自己托管，前后端同源）"
