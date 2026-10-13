@@ -177,7 +177,10 @@ function tryConnect(
 
 describe('Origin 校验（防 CSWSH，但别把自己人挡在门外）', () => {
   it('同源放行：Origin 的 host 与请求 Host 一致（生产就是这条）', async () => {
-    const result = await tryConnect({ Origin: 'https://dsp.kevy.top', Host: 'dsp.kevy.top' });
+    const result = await tryConnect({
+      Origin: 'https://console.example.com',
+      Host: 'console.example.com',
+    });
     expect(result.opened).toBe(true);
   });
 
@@ -186,11 +189,14 @@ describe('Origin 校验（防 CSWSH，但别把自己人挡在门外）', () => 
   });
 
   it('不带 Origin 也放行（curl / 自写测试工具不是浏览器，不在防护范围）', async () => {
-    expect((await tryConnect({ Host: 'dsp.kevy.top' })).opened).toBe(true);
+    expect((await tryConnect({ Host: 'console.example.com' })).opened).toBe(true);
   });
 
   it('跨站页面的盗连被 403 挡掉', async () => {
-    const result = await tryConnect({ Origin: 'https://evil.example', Host: 'dsp.kevy.top' });
+    const result = await tryConnect({
+      Origin: 'https://evil.example',
+      Host: 'console.example.com',
+    });
     expect(result.opened).toBe(false);
     expect(result.status).toBe(403);
   });

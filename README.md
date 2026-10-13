@@ -285,7 +285,7 @@ tests/                    单测 + 契约测试（vitest；含一个起真网关
 前端产物里也不写死域名（`wss://` 从 `location` 推导，换域名不用重新构建）。
 
 ```
-浏览器 ──https/wss──> dsp.kevy.top:443 ──(宝塔 Nginx 反代)──> 127.0.0.1:5090
+浏览器 ──https/wss──> <你的域名>:443 ──(宝塔 Nginx 反代)──> 127.0.0.1:5090
                                                               └ 网关：/api + /ws + dist/
 ```
 
@@ -294,23 +294,23 @@ tests/                    单测 + 契约测试（vitest；含一个起真网关
 在**自己的电脑上**执行（Git Bash / macOS / Linux，仓库根目录，已配好 SSH）：
 
 ```bash
-ssh root@8.138.193.49 "bash -s" < deploy/deploy.sh
+ssh root@<服务器公网IP> "bash -s" < deploy/deploy.sh
 ```
 
 在**服务器上**执行（宝塔终端 / SSH，之后更新代码也跑同一条）：
 
 ```bash
-bash /www/wwwroot/dsp.kevy.top/deploy/deploy.sh
+bash /www/wwwroot/dsp-console/deploy/deploy.sh
 ```
 
 脚本做的事（可重复执行 = 更新部署）：检查 Node ≥ 22 → `git fetch + reset` 到最新提交 →
 `pnpm install && pnpm build` → 写 systemd 单元并重启（开机自启、崩溃自拉）→
-`curl /healthz` 自检。代码目录默认 `APP_DIR=/www/wwwroot/dsp.kevy.top`（= 宝塔给该域名建的站点目录），
+`curl /healthz` 自检。代码目录默认 `APP_DIR=/www/wwwroot/dsp-console`（独立目录；想复用宝塔的站点目录就传 `APP_DIR=/www/wwwroot/<你的域名>`），
 可用环境变量覆盖：`APP_DIR` / `REPO_URL` / `BRANCH` / `PORT` / `NO_SERVICE=1`。
 
-### 宝塔里要配的一次性设置（把 `dsp.kevy.top` 转给 5090）
+### 宝塔里要配的一次性设置（把 `<你的域名>` 转给 5090）
 
-**先确认入口在不在**：网站 → `dsp.kevy.top` → 设置 → 看左侧有没有「反向代理」。
+**先确认入口在不在**：网站 → `<你的域名>` → 设置 → 看左侧有没有「反向代理」。
 
 - **有**（标准版）：反向代理 → 添加 → 目标 URL `http://127.0.0.1:5090`、发送域名 `$host`，
   再确认生成配置里有 `Upgrade` / `Connection` / `proxy_read_timeout`（现在的模板一般自带，
@@ -340,9 +340,10 @@ bash /www/wwwroot/dsp.kevy.top/deploy/deploy.sh
 三条 WebSocket 头是全篇唯一的硬要求：**缺了就是「页面能开、顶栏一直连不上」**。
 安全组放行 **80 / 443** 即可；5090 只在同机反代，不必对外开放。
 
-> 代码目录就是站点目录，所以反代**必须**配好：配好之后 `/` 全部转给 Node（Node 只发 `dist/`，
-> 仓库源码不外泄）；万一没配，nginx 会按站点根目录直接发文件（宝塔默认拦了 `.git`/`.env`，
-> 但 `src/`、`server/` 是发得出去的）。
+> 若把 `APP_DIR` 指向宝塔的站点目录（`/www/wwwroot/<你的域名>`），那反代**必须**先配好：
+> 配好之后 `/` 全部转给 Node（Node 只发 `dist/`，仓库源码不外泄）；万一没配，nginx 会按站点根目录
+> 直接发文件（宝塔默认拦了 `.git`/`.env`，但 `src/`、`server/` 是发得出去的）。
+> 默认的独立目录 `/www/wwwroot/dsp-console` 没有这个顾虑。
 
 ### 不用宝塔时（Caddy 备选）
 
@@ -355,10 +356,10 @@ Nginx 手写配置见 `deploy/nginx.conf`。两条路都别省 `Upgrade`/`Connec
 
 ### 检查清单
 
-- 域名 `dsp.kevy.top` → 服务器公网 IP；宝塔里 HTTPS 证书已配好。
+- 域名 `<你的域名>` → 服务器公网 IP；宝塔里 HTTPS 证书已配好。
 - ⚠️ 不要在生产上跑 `pnpm dev`：Vite 开发服务器不是生产服务器，两个端口还会带来跨域与 wss 的麻烦。
 - 大陆节点的 80/443 需要 **ICP 备案**；没备案时先用 `http://<公网IP>:5090` 验功能（安全组放行 5090）。
-- 上线自测：`curl https://dsp.kevy.top/healthz` → 打开页面看顶栏「已连接」→ 按两下故障注入台。
+- 上线自测：`curl https://<你的域名>/healthz` → 打开页面看顶栏「已连接」→ 按两下故障注入台。
 - 「页面能开、但顶栏一直连不上」只有三种成因，按顺序查：① 反代缺 `Upgrade`/`Connection` 三行头；
   ② 网关日志里有 `拒绝 upgrade：… 不同源` → 反代没带 `Host $host`（Origin 校验是"同源放行"，
   见 `server/index.mjs`）；③ 反代规则没生效（`/ws` 落到了静态目录）。

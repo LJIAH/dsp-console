@@ -17,7 +17,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/www/wwwroot/dsp.kevy.top
+WorkingDirectory=/www/wwwroot/dsp-console
 ExecStart=/usr/bin/node server/index.mjs
 Environment=NODE_ENV=production
 Environment=PORT=5090

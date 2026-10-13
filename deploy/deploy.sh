@@ -3,18 +3,18 @@
 # dsp-console 一键部署：拉取 → 安装 → 构建 → 常驻 → 自检
 #
 # 在你自己的电脑上执行（Git Bash / macOS / Linux，仓库根目录）：
-#   ssh root@8.138.193.49 "bash -s" < deploy/deploy.sh
+#   ssh root@<服务器公网IP> "bash -s" < deploy/deploy.sh
 # 在服务器上执行（宝塔终端 / SSH，之后更新也跑它）：
-#   bash /www/wwwroot/dsp.kevy.top/deploy/deploy.sh
+#   bash /www/wwwroot/dsp-console/deploy/deploy.sh
 #
 # 可用环境变量（都有默认值，一般不用动）：
-#   APP_DIR      代码目录   默认 /www/wwwroot/dsp.kevy.top（= 宝塔给该域名建的站点目录）
+#   APP_DIR      代码目录   默认 /www/wwwroot/dsp-console（独立目录；想复用宝塔的站点目录就传 APP_DIR=/www/wwwroot/<你的域名>）
 #   REPO_URL     仓库地址   默认 https://github.com/LJIAH/dsp-console.git
 #                           clone 慢/超时可换镜像，例如 Gitee 或
 #                           https://ghfast.top/https://github.com/LJIAH/dsp-console.git
 #   BRANCH       分支       默认 main
 #   PORT         网关端口   默认 5090（要与宝塔反代的目标端口一致）
-#   DOMAIN       域名       默认 dsp.kevy.top（只用于打印提示）
+#   DOMAIN       域名       默认 <你的域名>（只用于打印提示）
 #   NO_SERVICE=1 只拉代码 + 构建，不碰 systemd（本机冒烟、或用宝塔「Node 项目」时）
 #
 # 脚本不管的三件事（属于面板/安全组，只做一次；跑完它会打印具体怎么配）：
@@ -24,23 +24,25 @@
 #      `location ^~ /` —— 注意 `^~` 与 `Host $host` 两个都不能省，原因见脚本结尾的打印
 #   ③ 安全组放行 80/443；5090 只在同机反代，不必对外开放
 #
-# ⚠️ 代码目录 = 站点目录，所以**反向代理必须配好**：
+# ⚠️ 如果你想复用宝塔给域名建的那个站点目录（APP_DIR=/www/wwwroot/<你的域名>）：
+#    那就**必须**先把反向代理配好（拉取代码之前也一样）——
 #    配好之后 / 全部转给 Node（Node 只发 dist/，仓库源码不会外泄）；
 #    万一没配，nginx 会直接按站点根目录发文件（宝塔默认拦了 .git/.env，但 src/、server/ 是发得出去的）。
+#    默认的 /www/wwwroot/dsp-console 是个独立目录，不存在这个问题。
 #
 # 脚本内部的 git 调用都带 `-c safe.directory=<APP_DIR>`（站点目录属主是 www、脚本是 root，
 # 否则 git 会报 "detected dubious ownership"）。你自己想在这个目录里敲 git（status/pull）时，
 # 要么每次加 `-c safe.directory=...`，要么一次性放开（你自己的机器，自己决定）：
-#   git config --global --add safe.directory /www/wwwroot/dsp.kevy.top
+#   git config --global --add safe.directory /www/wwwroot/dsp-console
 # ══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 APP_NAME=dsp-console
-APP_DIR=${APP_DIR:-/www/wwwroot/dsp.kevy.top}
+APP_DIR=${APP_DIR:-/www/wwwroot/dsp-console}
 REPO_URL=${REPO_URL:-https://github.com/LJIAH/dsp-console.git}
 BRANCH=${BRANCH:-main}
 PORT=${PORT:-5090}
-DOMAIN=${DOMAIN:-dsp.kevy.top}
+DOMAIN=${DOMAIN:-<你的域名>}
 NO_SERVICE=${NO_SERVICE:-0}
 SERVICE=/etc/systemd/system/$APP_NAME.service
 NODE_MIN_MAJOR=22

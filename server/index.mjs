@@ -53,7 +53,7 @@ const SERVER_PING_MS = WIRE.cadence.serverPingMs;
 /**
  * Origin 校验：防的是"浏览器里的恶意页面偷偷连上来"（CSWSH），不是 curl —— 后者要靠 token。
  *
- * ⚠️ 这里**不能**写死 localhost：生产是 `https://dsp.kevy.top` 同源访问，
+ * ⚠️ 这里**不能**写死 localhost：生产是 `https://<你的域名>` 同源访问，
  * 写死就等于线上第一次握手就被 403 挡掉（曾是真实故障：本地全绿、上线连不上）。
  * 规则三条，开箱即用、不用配环境变量：
  *   ① 同源：Origin 的 host 与请求的 Host 一致（生产形态，nginx 转发时带 `Host $host`）
