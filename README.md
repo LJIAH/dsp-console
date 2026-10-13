@@ -48,21 +48,22 @@
 ```bash
 pnpm install
 
-# 一条命令起两个进程：网关(8080) + 前端(5173)
+# 一条命令起两个进程：网关(8080) + 前端(5090)
 pnpm start
 
 # 或分开起
 pnpm server   # Mock 设备网关（Express + ws）
-pnpm dev      # 前端（Vite）
+pnpm dev      # 前端（Vite，端口见 vite.config.ts）
 
 # 单测 + 契约测试（含「起一个真网关、收它实发的帧再校验」那一环）
 pnpm test
 ```
 
-打开 http://localhost:5173
+打开 http://localhost:5090
 
-- 手机真机验证：`pnpm dev` 已开 `--host`，同一局域网访问 `http://<你的IP>:5173`
-- 前端地址在 `.env.development`（`VITE_` 前缀，构建期注入）
+- 手机真机验证：`pnpm dev` 已开 `--host`，同一局域网访问 `http://<你的IP>:5090`
+- 本机开发时前端与网关是**两个**端口，所以 `.env.development` 里显式写了网关地址；
+  生产是**一个**端口（网关托管 `dist/`，同源推导 wss），见第十一节「部署到线上」
 
 ---
 
@@ -274,3 +275,68 @@ tests/                    单测 + 契约测试（vitest；含一个起真网关
 3. 三端适配收尾（44px 触控 / `100dvh` / 断点重排）
 4. 能力协商帧：连上后由设备发一次能力集（支持哪些消息、通道上限、固件版本），前端据此选装插件
    —— 目前通道数是从 `snapshot` 的 `channels` 长度倒推的，够用但不够显式
+
+---
+
+## 十一、部署到线上（宝塔 + Nginx 反代）
+
+形态：**一个 Node 进程、一个端口**。它同时提供 REST、WebSocket 与前端静态文件
+（`pnpm build` 的产物由网关托管）—— 同源，所以不需要 CORS、不需要第二张证书，
+前端产物里也不写死域名（`wss://` 从 `location` 推导，换域名不用重新构建）。
+
+```
+浏览器 ──https/wss──> dsp.kevy.top:443 ──(宝塔 Nginx 反代)──> 127.0.0.1:5090
+                                                              └ 网关：/api + /ws + dist/
+```
+
+### 一键部署
+
+在**自己的电脑上**执行（Git Bash / macOS / Linux，仓库根目录，已配好 SSH）：
+
+```bash
+ssh root@8.138.193.49 "bash -s" < deploy/deploy.sh
+```
+
+在**服务器上**执行（宝塔终端 / SSH，之后更新代码也跑同一条）：
+
+```bash
+bash /www/wwwroot/dsp.kevy.top/deploy/deploy.sh
+```
+
+脚本做的事（可重复执行 = 更新部署）：检查 Node ≥ 22 → `git fetch + reset` 到最新提交 →
+`pnpm install && pnpm build` → 写 systemd 单元并重启（开机自启、崩溃自拉）→
+`curl /healthz` 自检。代码目录默认 `APP_DIR=/www/wwwroot/dsp.kevy.top`（= 宝塔给该域名建的站点目录），
+可用环境变量覆盖：`APP_DIR` / `REPO_URL` / `BRANCH` / `PORT` / `NO_SERVICE=1`。
+
+### 宝塔里要配的一次性设置
+
+1. 网站 → `dsp.kevy.top` → **反向代理** → 添加：目标 URL `http://127.0.0.1:5090`，发送域名 `$host`
+2. 打开该反代的「配置文件」，确认这三行在（**WebSocket 全靠它们**，缺了就是「页面能开、顶栏一直连不上」）：
+   ```nginx
+   proxy_http_version 1.1;
+   proxy_set_header Upgrade $http_upgrade;
+   proxy_set_header Connection "upgrade";
+   ```
+3. 安全组：放行 **80 / 443** 即可；5090 只在同机反代，不必对外开放
+
+> 代码目录就是站点目录，所以反代**必须**配好：配好之后 `/` 全部转给 Node（Node 只发 `dist/`，
+> 仓库源码不外泄）；万一没配，nginx 会按站点根目录直接发文件（宝塔默认拦了 `.git`/`.env`，
+> 但 `src/`、`server/` 是发得出去的）。
+
+### 不用宝塔时（Caddy 备选）
+
+```bash
+cp deploy/Caddyfile /etc/caddy/Caddyfile && systemctl reload caddy   # 自动证书 + 自动转发 WS
+```
+
+Nginx 手写配置见 `deploy/nginx.conf`。两条路都别省 `Upgrade`/`Connection` 头与
+`proxy_read_timeout` —— 那正是「页面能开、连接连不上」的成因。
+
+### 检查清单
+
+- 域名 `dsp.kevy.top` → 服务器公网 IP；宝塔里 HTTPS 证书已配好。
+- ⚠️ 不要在生产上跑 `pnpm dev`：Vite 开发服务器不是生产服务器，两个端口还会带来跨域与 wss 的麻烦。
+- 大陆节点的 80/443 需要 **ICP 备案**；没备案时先用 `http://<公网IP>:5090` 验功能（安全组放行 5090）。
+- 上线自测：`curl https://dsp.kevy.top/healthz` → 打开页面看顶栏「已连接」→ 按两下故障注入台。
+- 未做的事（演示期已知）：`POST /api/chaos/*` 对公网开放，任何人都能让你的界面「假死」；
+  网关是单进程内存状态，只能 1 副本、重启即重置。
