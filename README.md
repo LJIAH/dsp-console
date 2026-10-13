@@ -308,16 +308,37 @@ bash /www/wwwroot/dsp.kevy.top/deploy/deploy.sh
 `curl /healthz` 自检。代码目录默认 `APP_DIR=/www/wwwroot/dsp.kevy.top`（= 宝塔给该域名建的站点目录），
 可用环境变量覆盖：`APP_DIR` / `REPO_URL` / `BRANCH` / `PORT` / `NO_SERVICE=1`。
 
-### 宝塔里要配的一次性设置
+### 宝塔里要配的一次性设置（把 `dsp.kevy.top` 转给 5090）
 
-1. 网站 → `dsp.kevy.top` → **反向代理** → 添加：目标 URL `http://127.0.0.1:5090`，发送域名 `$host`
-2. 打开该反代的「配置文件」，确认这三行在（**WebSocket 全靠它们**，缺了就是「页面能开、顶栏一直连不上」）：
-   ```nginx
-   proxy_http_version 1.1;
-   proxy_set_header Upgrade $http_upgrade;
-   proxy_set_header Connection "upgrade";
-   ```
-3. 安全组：放行 **80 / 443** 即可；5090 只在同机反代，不必对外开放
+**先确认入口在不在**：网站 → `dsp.kevy.top` → 设置 → 看左侧有没有「反向代理」。
+
+- **有**（标准版）：反向代理 → 添加 → 目标 URL `http://127.0.0.1:5090`、发送域名 `$host`，
+  再确认生成配置里有 `Upgrade` / `Connection` / `proxy_read_timeout`（现在的模板一般自带，
+  可能是 `$connection_upgrade` 写法，等价，别重复添加）。
+- **没有**（阿里云联合定制版等精简版：站点设置里只有「域名管理 / 流量限制 / 伪静态 / 配置文件 /
+  重定向 / SSL / 网站日志」）：直接点 **「配置文件」**，在 `server { ... }` 里插入下面这段 ——
+  效果与面板的反代完全一致，只是手写：
+
+  ```nginx
+  # dsp-console 反代（含 WebSocket 升级）
+  location / {
+      proxy_pass http://127.0.0.1:5090;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+  }
+  ```
+
+  保存后面板会自动 reload。若提示 `duplicate location "/"`，说明原本已有一个 `location /` ——
+  把原来那一段整段替换成上面这段即可（不要并存两个）。
+
+三条 WebSocket 头是全篇唯一的硬要求：**缺了就是「页面能开、顶栏一直连不上」**。
+安全组放行 **80 / 443** 即可；5090 只在同机反代，不必对外开放。
 
 > 代码目录就是站点目录，所以反代**必须**配好：配好之后 `/` 全部转给 Node（Node 只发 `dist/`，
 > 仓库源码不外泄）；万一没配，nginx 会按站点根目录直接发文件（宝塔默认拦了 `.git`/`.env`，
